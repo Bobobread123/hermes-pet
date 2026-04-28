@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Tauri / Rust（提前埋好）
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Node / Frontend（提前埋好）
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+*.app
+*.dmg
+*.log
+
+# WorkBuddy / 本地工作元数据
+.workbuddy/
+.codebuddy/
+.brain/
