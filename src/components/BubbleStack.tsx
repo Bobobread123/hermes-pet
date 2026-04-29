@@ -52,6 +52,8 @@ const POPOVER_LARGE_MAX_HEIGHT = 560;
 const POPOVER_VIEWPORT_MARGIN = 16;
 const POPOVER_ANIMATION_MS = 360;
 const FILE_CHIP_STRIP_HEIGHT = 36;
+const HOVER_PILL_ANIMATION_MS = 180;
+const HOVER_PILL_STAGGER_MS = 34;
 
 interface BubbleConfig {
   kind: BubbleKind;
@@ -121,6 +123,8 @@ const BUBBLES: BubbleConfig[] = [
     multiTurn: false,
   },
 ];
+const HOVER_COLLAPSE_ANIMATION_MS =
+  HOVER_PILL_ANIMATION_MS + HOVER_PILL_STAGGER_MS * (BUBBLES.length - 1);
 
 function createLocalId(prefix: string): string {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random()}`;
@@ -187,13 +191,29 @@ export default function BubbleStack({
     cowork: [],
   });
   const dragTargetKindRef = useRef<BubbleKind | null>(null);
+  const hoverCloseTimerRef = useRef<number | null>(null);
+  const wasMultiPillExpandedRef = useRef(false);
 
   // stack 是否处于"展开态"（hover OR 已选中某个输入 / 浮窗打开）
   const expanded = hovered || activeKind !== null || dragTargetKind !== null;
   const activeOnly = activeKind !== null;
+  const [hoverClosing, setHoverClosing] = useState(false);
+  const renderExpanded = expanded || hoverClosing;
+  const pillAnimation = hoverClosing && !expanded
+    ? "closing"
+    : expanded && !activeOnly
+      ? "entering"
+      : "none";
+  const dotAnimation = pillAnimation === "entering"
+    ? "closing"
+    : pillAnimation === "closing"
+      ? "entering"
+      : "none";
+  const showDots =
+    !activeOnly && ((!expanded && !hoverClosing) || dotAnimation !== "none");
 
   // stack 整体位置：桌宠左侧
-  const stackWidth = expanded ? STACK_WIDTH_EXPANDED : STACK_WIDTH_COLLAPSED;
+  const stackWidth = renderExpanded ? STACK_WIDTH_EXPANDED : STACK_WIDTH_COLLAPSED;
   const fullStackHeight =
     BUBBLE_HEIGHT * BUBBLES.length + BUBBLE_GAP * (BUBBLES.length - 1);
   const activeFileChipHeight =
@@ -215,6 +235,50 @@ export default function BubbleStack({
   useEffect(() => {
     dragTargetKindRef.current = dragTargetKind;
   }, [dragTargetKind]);
+
+  useEffect(() => {
+    const multiPillExpanded = expanded && !activeOnly;
+
+    if (multiPillExpanded) {
+      if (hoverCloseTimerRef.current !== null) {
+        window.clearTimeout(hoverCloseTimerRef.current);
+        hoverCloseTimerRef.current = null;
+      }
+      setHoverClosing(false);
+      wasMultiPillExpandedRef.current = true;
+      return;
+    }
+
+    if (expanded) {
+      if (hoverCloseTimerRef.current !== null) {
+        window.clearTimeout(hoverCloseTimerRef.current);
+        hoverCloseTimerRef.current = null;
+      }
+      setHoverClosing(false);
+      wasMultiPillExpandedRef.current = false;
+      return;
+    }
+
+    if (!wasMultiPillExpandedRef.current) return;
+
+    if (hoverCloseTimerRef.current !== null) {
+      window.clearTimeout(hoverCloseTimerRef.current);
+    }
+    setHoverClosing(true);
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setHoverClosing(false);
+    }, HOVER_COLLAPSE_ANIMATION_MS);
+    wasMultiPillExpandedRef.current = false;
+  }, [activeOnly, expanded]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverCloseTimerRef.current !== null) {
+        window.clearTimeout(hoverCloseTimerRef.current);
+      }
+    };
+  }, []);
 
   const getDropTargetKind = useCallback(
     (position: DragDropPosition): BubbleKind | null => {
@@ -317,7 +381,7 @@ export default function BubbleStack({
   return (
     <>
       <div
-        className={`bubble-stack${expanded ? " is-expanded" : ""}`}
+        className={`bubble-stack${renderExpanded ? " is-expanded" : ""}${hoverClosing ? " is-hover-closing" : ""}`}
         style={{
           left: stackX,
           top: stackY,
@@ -331,8 +395,12 @@ export default function BubbleStack({
           <Bubble
             key={cfg.kind}
             cfg={cfg}
-            expanded={expanded}
+            expanded={renderExpanded}
             visible={!activeOnly || activeKind === cfg.kind}
+            dotVisible={showDots}
+            dotAnimation={dotAnimation}
+            stackIndex={idx}
+            pillAnimation={pillAnimation}
             popoverOpen={openPopover === cfg.kind}
             yOffset={
               activeOnly ? activeInputOffset : idx * (BUBBLE_HEIGHT + BUBBLE_GAP)
@@ -385,6 +453,10 @@ interface BubbleProps {
   cfg: BubbleConfig;
   expanded: boolean;
   visible: boolean;
+  dotVisible: boolean;
+  dotAnimation: "entering" | "closing" | "none";
+  stackIndex: number;
+  pillAnimation: "entering" | "closing" | "none";
   popoverOpen: boolean;
   yOffset: number;
   popoverAnchor: { left: number; top: number };
@@ -402,6 +474,10 @@ function Bubble({
   cfg,
   expanded,
   visible,
+  dotVisible,
+  dotAnimation,
+  stackIndex,
+  pillAnimation,
   popoverOpen,
   yOffset,
   popoverAnchor,
@@ -766,12 +842,15 @@ function Bubble({
   return (
     <>
       {/* 收起态：小圆点 */}
-      {visible && !expanded && (
+      {visible && dotVisible && (
         <button
-          className="bubble-dot"
+          className={`bubble-dot${dotAnimation !== "none" ? ` is-${dotAnimation}` : ""}`}
           style={{
             top: yOffset + (BUBBLE_HEIGHT - 16) / 2,
             backgroundColor: dotColor,
+            animationDelay: dotAnimation !== "none"
+              ? `${stackIndex * HOVER_PILL_STAGGER_MS}ms`
+              : undefined,
           }}
           onClick={handleBubbleClick}
           title={cfg.label}
@@ -783,8 +862,14 @@ function Bubble({
       {/* 展开态：药丸 */}
       {visible && expanded && (
         <div
-          className={`bubble-pill${isRunning ? " is-running" : ""}${isDragTarget ? " is-drag-target" : ""}`}
-          style={{ top: yOffset, height: BUBBLE_HEIGHT }}
+          className={`bubble-pill${isRunning ? " is-running" : ""}${isDragTarget ? " is-drag-target" : ""}${pillAnimation !== "none" ? ` is-${pillAnimation}` : ""}`}
+          style={{
+            top: yOffset,
+            height: BUBBLE_HEIGHT,
+            animationDelay: pillAnimation !== "none"
+              ? `${stackIndex * HOVER_PILL_STAGGER_MS}ms`
+              : undefined,
+          }}
         >
           <span
             className="bubble-pill-label"
