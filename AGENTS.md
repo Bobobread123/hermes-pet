@@ -21,7 +21,8 @@ hermes-pet/
 │   ├── PRD.md           # 产品愿景与需求（对内）
 │   ├── UI-UX-Style.md   # 视觉与交互风格
 │   ├── tech.md          # 技术骨架 V1 拍板版
-│   ├── progress.md      # 实现进度 / 常见错误 / 排障记录
+│   ├── progress.md      # 实现进度 / 当前结果 / 待观察事项
+│   ├── lessons.md       # 稳定沉淀的 bad case / 修复方案
 │   └── features/
 │       ├── normal-mode.md
 │       ├── work-mode.md
@@ -46,12 +47,13 @@ hermes-pet/
 2. docs/PRD.md —— 详细产品需求
 3. docs/UI-UX-Style.md —— 角色长什么样、交互克制度
 4. docs/tech.md —— 技术决策、CLI 接入方案、状态机、第一周计划
-5. docs/features/ —— 按需查特定功能的详细行为
+5. docs/lessons.md —— 先看历史 bad case，避免重复踩坑
+6. docs/features/ —— 按需查特定功能的详细行为
 
 ## 工作约定
 
 1. 所有设计讨论结果更新到 `docs/` 下的 markdown 文件（`docs/PRD.md` / `docs/tech.md` / `docs/UI-UX-Style.md` / `docs/features/*.md`）。
-2. 实现过程中的常见错误、踩坑、排障结论、临时 workaround，要及时记录到 `docs/progress.md`；稳定后的技术决策再同步回 `docs/tech.md` 或对应 feature 文档。
+2. 实现过程中的阶段进度、当前结果、待观察事项记录到 `docs/progress.md`；常见错误、踩坑、排障结论、临时 workaround 和已确认会复用的 bad case / 修复方案，统一沉淀到 `docs/lessons.md`；稳定后的技术决策再同步回 `docs/tech.md` 或对应 feature 文档。
 3. **Git 节奏（Plan C）**：当前不开 feature 分支，直接在 `main` 上推进。每个里程碑必须独立 commit + 完整 commit message（背景 / 涉及文件清单 / 关键决策原因），多条逻辑独立的改动要拆成多个 commit。
 4. **Push 规则**：本地 commit 后**不要立刻 push**。必须先本地 `npm run tauri dev` 跑通 + 用户肉眼验证 + 用户明确点头，才能 push。AI 不可自作主张 push。
 5. 不要在仓库之外创建或修改文件，除非用户明确要求（例如 `~/.hermes/`、Tauri 应用 bundle 等运行时路径）。

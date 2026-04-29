@@ -66,6 +66,12 @@
   box-shadow: 0 2px 12px rgba(233, 75, 75, 0.18);
 }
 
+.bubble-pill.is-drag-target {
+  border-color: #5da8e8;
+  border-width: 2px;
+  box-shadow: 0 3px 14px rgba(93, 168, 232, 0.24);
+}
+
 .bubble-pill-label {
   flex: 0 0 auto;
   margin-right: 8px;
@@ -101,6 +107,56 @@
 .bubble-pill-input:disabled {
   color: #b8b3ac;
   cursor: not-allowed;
+}
+
+.bubble-file-chips {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 6px;
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 11;
+}
+
+.bubble-file-chip {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d7c7ad;
+  border-radius: 999px;
+  background: rgba(255, 248, 236, 0.98);
+  color: #6d5f50;
+  cursor: pointer;
+  font: 11px -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  padding: 5px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.bubble-file-chip:hover {
+  border-color: #5da8e8;
+  color: #1f3b57;
+}
+
+.bubble-file-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.bubble-file-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble-file-chip-remove {
+  flex: 0 0 auto;
+  color: #9a9185;
+  font-size: 13px;
+  line-height: 1;
 }
 
 .bubble-pill-toggle,
@@ -191,17 +247,22 @@
 }
 
 .bubble-session-tabs {
+  flex: 0 0 36px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 6px 8px;
   border-bottom: 1px solid #f0e6d2;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .bubble-session-tab,
 .bubble-session-new {
   flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 22px;
   border: 1px solid transparent;
   background: #f5ead7;
   color: #6d5f50;
@@ -216,7 +277,7 @@
   align-items: center;
   gap: 4px;
   max-width: 116px;
-  padding: 3px 6px 3px 8px;
+  padding: 0 6px 0 8px;
 }
 
 .bubble-session-tab.is-active {
@@ -268,7 +329,6 @@
 
 .bubble-session-new {
   width: 22px;
-  height: 22px;
   padding: 0;
   font-size: 14px;
   line-height: 20px;

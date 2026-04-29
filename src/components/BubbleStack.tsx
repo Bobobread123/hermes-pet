@@ -17,10 +17,11 @@
 //
 // 不在这里做的：
 //   - Markdown 渲染（V1 纯文本流）
-//   - 拖入文件（流 C）
+//   - 图片 / 富文本拖入（V1 先只接文件路径）
 //   - 角色 SVG 替换（先借 PetCircle 占位）
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { updateHitRegion } from "../hitRegions";
 import { useHermesTask, type TaskStatus } from "../hooks/useHermesTask";
 import {
@@ -46,6 +47,7 @@ const BUBBLE_GAP = 8; // 气泡之间垂直间距
 const POPOVER_GAP = 8;
 const POPOVER_WIDTH = STACK_WIDTH_EXPANDED; // 下方浮窗宽度跟上方选中输入保持一致
 const POPOVER_MAX_HEIGHT = 320;
+const FILE_CHIP_STRIP_HEIGHT = 36;
 
 interface BubbleConfig {
   kind: BubbleKind;
@@ -71,6 +73,23 @@ interface BubbleSession {
   errorMessage: string | null;
   unread: boolean;
 }
+
+interface DropRequest {
+  id: string;
+  kind: BubbleKind;
+  paths: string[];
+}
+
+type DragDropPosition = {
+  x: number;
+  y: number;
+};
+
+type TauriDragDropPayload =
+  | { type: "enter"; paths: string[]; position: DragDropPosition }
+  | { type: "over"; position: DragDropPosition }
+  | { type: "drop"; paths: string[]; position: DragDropPosition }
+  | { type: "leave" };
 
 const BUBBLES: BubbleConfig[] = [
   {
@@ -116,6 +135,24 @@ function titleFromText(text: string): string {
   return normalized.length > 14 ? `${normalized.slice(0, 14)}...` : normalized;
 }
 
+function normalizeDragPosition(position: DragDropPosition): DragDropPosition {
+  const dpr = window.devicePixelRatio || 1;
+  const looksPhysical =
+    dpr > 1 && (position.x > window.innerWidth || position.y > window.innerHeight);
+
+  return looksPhysical
+    ? { x: position.x / dpr, y: position.y / dpr }
+    : position;
+}
+
+function formatDroppedPaths(paths: string[]): string {
+  return paths.map((path) => `@${path}`).join("\n");
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 export default function BubbleStack({
   petPos,
   petSize,
@@ -126,18 +163,120 @@ export default function BubbleStack({
   const [openPopover, setOpenPopover] = useState<BubbleKind | null>(null);
   // 当前被用户选中的输入气泡。选中后只显示这一条，其它 hover 入口收起。
   const [activeKind, setActiveKind] = useState<BubbleKind | null>(null);
+  const [dragTargetKind, setDragTargetKind] = useState<BubbleKind | null>(null);
+  const [dropRequest, setDropRequest] = useState<DropRequest | null>(null);
+  const [droppedPathsByBubble, setDroppedPathsByBubble] = useState<Record<BubbleKind, string[]>>({
+    research: [],
+    dialog: [],
+    cowork: [],
+  });
+  const dragTargetKindRef = useRef<BubbleKind | null>(null);
 
   // stack 是否处于"展开态"（hover OR 已选中某个输入 / 浮窗打开）
-  const expanded = hovered || activeKind !== null;
+  const expanded = hovered || activeKind !== null || dragTargetKind !== null;
   const activeOnly = activeKind !== null;
 
   // stack 整体位置：桌宠左侧
   const stackWidth = expanded ? STACK_WIDTH_EXPANDED : STACK_WIDTH_COLLAPSED;
   const fullStackHeight =
     BUBBLE_HEIGHT * BUBBLES.length + BUBBLE_GAP * (BUBBLES.length - 1);
-  const stackHeight = activeOnly ? BUBBLE_HEIGHT : fullStackHeight;
+  const activeFileChipHeight =
+    activeKind && droppedPathsByBubble[activeKind].length > 0
+      ? FILE_CHIP_STRIP_HEIGHT
+      : 0;
+  const stackHeight = activeOnly
+    ? BUBBLE_HEIGHT + activeFileChipHeight
+    : fullStackHeight;
   const stackX = petPos.x - STACK_GAP - stackWidth;
   const stackY = petPos.y + (petSize - fullStackHeight) / 2;
+
+  useEffect(() => {
+    dragTargetKindRef.current = dragTargetKind;
+  }, [dragTargetKind]);
+
+  const getDropTargetKind = useCallback(
+    (position: DragDropPosition): BubbleKind | null => {
+      const { x, y } = normalizeDragPosition(position);
+      const expandedStackX = petPos.x - STACK_GAP - STACK_WIDTH_EXPANDED;
+      const collapsedStackX = petPos.x - STACK_GAP - STACK_WIDTH_COLLAPSED;
+      const insideExpandedStackX =
+        x >= expandedStackX && x <= expandedStackX + STACK_WIDTH_EXPANDED;
+      const insideCollapsedStackX =
+        x >= collapsedStackX && x <= collapsedStackX + STACK_WIDTH_COLLAPSED;
+
+      for (const [idx, cfg] of BUBBLES.entries()) {
+        const top = stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
+        const insideY = y >= top && y <= top + BUBBLE_HEIGHT;
+        if (insideY && (insideExpandedStackX || insideCollapsedStackX)) {
+          return cfg.kind;
+        }
+      }
+
+      const insidePet =
+        x >= petPos.x &&
+        x <= petPos.x + petSize &&
+        y >= petPos.y &&
+        y <= petPos.y + petSize;
+      return insidePet ? "dialog" : null;
+    },
+    [petPos.x, petPos.y, petSize, stackY],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (disposed) return;
+        const payload = event.payload as TauriDragDropPayload;
+
+        if (payload.type === "leave") {
+          setDragTargetKind(null);
+          return;
+        }
+
+        const nextKind = getDropTargetKind(payload.position);
+        setDragTargetKind(nextKind);
+        setHovered(nextKind !== null);
+
+        if (payload.type !== "drop") return;
+
+        const targetKind = nextKind ?? dragTargetKindRef.current;
+        if (!targetKind || payload.paths.length === 0) {
+          setDragTargetKind(null);
+          return;
+        }
+
+        setDropRequest({
+          id: createLocalId("drop"),
+          kind: targetKind,
+          paths: payload.paths,
+        });
+        setDroppedPathsByBubble((prev) => ({
+          ...prev,
+          [targetKind]: [...prev[targetKind], ...payload.paths],
+        }));
+        setOpenPopover(targetKind);
+        setActiveKind(targetKind);
+        setDragTargetKind(null);
+      })
+      .then((off) => {
+        if (disposed) {
+          off();
+          return;
+        }
+        unlisten = off;
+      })
+      .catch((e) => {
+        console.warn("drag/drop subscription failed:", e);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [getDropTargetKind]);
 
   // ---- hit region 上报 ----
   useEffect(() => {
@@ -190,11 +329,25 @@ export default function BubbleStack({
               });
             }}
             onWaitingOutputChange={onWaitingOutputChange}
+            dropRequest={dropRequest}
+            isDragTarget={dragTargetKind === cfg.kind}
+            droppedFilePaths={droppedPathsByBubble[cfg.kind]}
+            onDroppedFilePathsChange={(paths) => {
+              setDroppedPathsByBubble((prev) => ({
+                ...prev,
+                [cfg.kind]: paths,
+              }));
+            }}
             // 浮窗位置基准：气泡所在的全局 y
             popoverAnchor={{
               left: activeOnly ? stackX : stackX + stackWidth + 8,
               top: activeOnly
-                ? stackY + BUBBLE_HEIGHT + POPOVER_GAP
+                ? stackY +
+                  BUBBLE_HEIGHT +
+                  POPOVER_GAP +
+                  (droppedPathsByBubble[cfg.kind].length > 0
+                    ? FILE_CHIP_STRIP_HEIGHT
+                    : 0)
                 : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP),
             }}
           />
@@ -217,6 +370,10 @@ interface BubbleProps {
   onPopoverToggle: (open: boolean) => void;
   onFocusChange: (focused: boolean) => void;
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
+  dropRequest: DropRequest | null;
+  isDragTarget: boolean;
+  droppedFilePaths: string[];
+  onDroppedFilePathsChange: (paths: string[]) => void;
 }
 
 function Bubble({
@@ -229,6 +386,10 @@ function Bubble({
   onPopoverToggle,
   onFocusChange,
   onWaitingOutputChange,
+  dropRequest,
+  isDragTarget,
+  droppedFilePaths,
+  onDroppedFilePathsChange,
 }: BubbleProps) {
   const [input, setInput] = useState("");
   const [sessions, setSessions] = useState<BubbleSession[]>(() => [
@@ -241,6 +402,7 @@ function Bubble({
   const popoverBodyRef = useRef<HTMLDivElement>(null);
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const runningSessionIdRef = useRef<string | null>(null);
+  const lastDropRequestIdRef = useRef<string | null>(null);
 
   // 每个气泡一个独立的 task hook
   const task = useHermesTask();
@@ -254,15 +416,21 @@ function Bubble({
   // 红点：done / error 时挂红点提示（直到用户打开浮窗看过）
   const hasUnreadResult = sessions.some((session) => session.unread);
 
+  function resetTaskView(opts?: { keepSession?: boolean }) {
+    currentAssistantMessageIdRef.current = null;
+    runningSessionIdRef.current = null;
+    task.reset(opts);
+  }
+
   function handleNewSession() {
     if (isRunning) return;
     const next = createBubbleSession(sessions.length + 1);
     setSessions((prev) => [...prev, next]);
     setActiveSessionId(next.id);
-    currentAssistantMessageIdRef.current = null;
+    onDroppedFilePathsChange([]);
     setGenerationCollapsed(false);
     onPopoverToggle(true);
-    task.reset();
+    resetTaskView();
   }
 
   function handleDeleteSession(sessionId: string) {
@@ -271,7 +439,7 @@ function Bubble({
       if (prev.length === 1) {
         const replacement = createBubbleSession(1);
         setActiveSessionId(replacement.id);
-        task.reset();
+        resetTaskView();
         return [replacement];
       }
 
@@ -280,7 +448,7 @@ function Bubble({
       if (sessionId === activeSessionId) {
         const fallback = next[Math.max(0, idx - 1)] ?? next[0];
         setActiveSessionId(fallback.id);
-        task.reset({ keepSession: false });
+        resetTaskView({ keepSession: false });
       }
       return next;
     });
@@ -296,13 +464,15 @@ function Bubble({
       ),
     );
     onPopoverToggle(true);
-    task.reset({ keepSession: false });
+    resetTaskView({ keepSession: false });
   }
 
   // 提交
   function handleSubmit() {
     const text = input.trim();
-    if (!text || !activeSession) return;
+    const fileText = formatDroppedPaths(droppedFilePaths);
+    const submittedText = [text, fileText].filter(Boolean).join("\n");
+    if (!submittedText || !activeSession) return;
 
     const sessionId = activeSession.id;
     runningSessionIdRef.current = sessionId;
@@ -315,8 +485,9 @@ function Bubble({
     setSessions((prev) =>
       prev.map((session) => {
         if (session.id !== sessionId) return session;
-        const nextTitle =
-          session.title.startsWith("Session ") ? titleFromText(text) : session.title;
+        const nextTitle = session.title.startsWith("Session ")
+          ? titleFromText(text || fileNameFromPath(droppedFilePaths[0] ?? ""))
+          : session.title;
         const nextMessages =
           cfg.multiTurn && assistantMessageId
             ? [
@@ -324,7 +495,7 @@ function Bubble({
                 {
                   id: createLocalId("user"),
                   role: "user" as const,
-                  content: text,
+                  content: submittedText,
                 },
                 {
                   id: assistantMessageId,
@@ -348,11 +519,12 @@ function Bubble({
 
     // dialog 多轮：第二轮起带 Hermes sessionId，不再带 systemPrompt
     const submitArgs = cfg.multiTurn && activeSession.sessionId
-      ? { text, sessionId: activeSession.sessionId }
-      : { text, systemPrompt: DEFAULT_SYSTEM_PROMPTS[cfg.kind] };
+      ? { text: submittedText, sessionId: activeSession.sessionId }
+      : { text: submittedText, systemPrompt: DEFAULT_SYSTEM_PROMPTS[cfg.kind] };
 
     task.submit(submitArgs);
     setInput("");
+    onDroppedFilePathsChange([]);
     setGenerationCollapsed(false);
 
     // 三个任务提交后都打开浮窗，让用户能直接看到流式输出。
@@ -362,7 +534,11 @@ function Bubble({
   // 点击气泡（非展开态时）→ 展开浮窗看历史
   // 点击气泡（展开态时）→ 切换浮窗
   function handleBubbleClick() {
-    onPopoverToggle(!popoverOpen);
+    const nextOpen = !popoverOpen;
+    if (nextOpen) {
+      setGenerationCollapsed(false);
+    }
+    onPopoverToggle(nextOpen);
   }
 
   function handleCollapseGeneration() {
@@ -467,6 +643,17 @@ function Bubble({
     body?.scrollTo({ top: body.scrollHeight });
   }, [popoverOpen, cfg.multiTurn, activeSession?.messages, activeSession?.output]);
 
+  useEffect(() => {
+    if (!dropRequest || dropRequest.kind !== cfg.kind || isRunning) return;
+    if (lastDropRequestIdRef.current === dropRequest.id) return;
+    lastDropRequestIdRef.current = dropRequest.id;
+
+    setGenerationCollapsed(false);
+    onFocusChange(true);
+    onPopoverToggle(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [cfg.kind, dropRequest, isRunning, onFocusChange, onPopoverToggle]);
+
   // 状态色（V1 简化：idle 灰 / running 红 / done 绿 / error 红）
   const dotColor = useMemo(() => {
     if (isRunning) return "#E94B4B"; // 红脸
@@ -495,7 +682,7 @@ function Bubble({
       {/* 展开态：药丸 */}
       {visible && expanded && (
         <div
-          className={`bubble-pill${isRunning ? " is-running" : ""}`}
+          className={`bubble-pill${isRunning ? " is-running" : ""}${isDragTarget ? " is-drag-target" : ""}`}
           style={{ top: yOffset, height: BUBBLE_HEIGHT }}
         >
           <span
@@ -545,6 +732,33 @@ function Bubble({
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {visible && expanded && droppedFilePaths.length > 0 && (
+        <div
+          className="bubble-file-chips"
+          style={{ top: yOffset + BUBBLE_HEIGHT + 6 }}
+        >
+          {droppedFilePaths.map((path, index) => (
+            <button
+              key={`${path}-${index}`}
+              className="bubble-file-chip"
+              onClick={() => {
+                onDroppedFilePathsChange(
+                  droppedFilePaths.filter((_, idx) => idx !== index),
+                );
+              }}
+              title={path}
+              type="button"
+              disabled={isRunning}
+            >
+              <span className="bubble-file-chip-name">
+                {fileNameFromPath(path)}
+              </span>
+              <span className="bubble-file-chip-remove">×</span>
+            </button>
+          ))}
         </div>
       )}
 
