@@ -52,7 +52,7 @@ hermes chat -Q --accept-hooks \
 - 输入完回车提交 → 工作模式整体进入 `task_running`（红脸）
 - stdout 流过来的过程中：**只在后台累积，不实时显示在气泡里**（避免气泡闪烁分心）
 - 流结束（子进程退出）→ 红脸消退 + 挥手 + 气泡上出现一个不显眼的小红点 / 数字标记
-- 用户点击 research 气泡 → 展开查看结果
+- 用户点击 research 气泡或对应 session tab → 展开查看结果，并清掉红点
 
 ## 结果展开形式
 
@@ -60,6 +60,7 @@ hermes chat -Q --accept-hooks \
 
 - 当前气泡向下展开成一个浮窗（宽度与上方 research 输入 pill 保持一致，高自适应，最大高度后内滚）
 - 浮窗内：
+  - Tab 区：当前气泡的 session tabs，可新建 / 切换 / 删除本地 research session
   - 顶部：原研究主题（灰色一行小字）
   - 主体：Hermes 输出（按 Markdown 渲染：列表、代码块、强调）
   - 底部：一个"复制"按钮 + 一个"丢给对话气泡继续聊"按钮
@@ -72,7 +73,8 @@ hermes chat -Q --accept-hooks \
 
 ## 历史记录
 
-V1 不持久化 —— research 每次都是独立 session（不带 `-r`），关掉桌宠或切到普通模式再回来时已经丢失。  
+V1 不持久化 —— research 每个 tab 都是独立 session（不带 `-r`），关掉桌宠或切到普通模式再回来时已经丢失。  
+删除 tab 只删除桌宠本地展示记录，不删除 Hermes Agent 底层 session store。  
 V2 可以做"最近 N 次"，技术上优先靠 Hermes session 能力恢复历史；若 `--source tool` 性能问题解决，再考虑按 source 过滤桌宠会话。
 
 ## 与其他特性的关系

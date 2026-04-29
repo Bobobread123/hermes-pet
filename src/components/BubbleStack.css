@@ -175,6 +175,90 @@
   color: #2b2b2b;
 }
 
+.bubble-session-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f0e6d2;
+  overflow-x: auto;
+}
+
+.bubble-session-tab,
+.bubble-session-new {
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  background: #f5ead7;
+  color: #6d5f50;
+  border-radius: 999px;
+  cursor: pointer;
+  font: 11px -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+}
+
+.bubble-session-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 116px;
+  padding: 3px 6px 3px 8px;
+}
+
+.bubble-session-tab.is-active {
+  border-color: #d4b896;
+  background: #fff8ec;
+  color: #2b2b2b;
+}
+
+.bubble-session-tab.has-unread::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e94b4b;
+  border: 1px solid #fff;
+}
+
+.bubble-session-tab:disabled,
+.bubble-session-new:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.bubble-session-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble-session-tab-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  color: #9a9185;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.bubble-session-tab-delete:hover {
+  background: rgba(233, 75, 75, 0.12);
+  color: #e94b4b;
+}
+
+.bubble-session-new {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
 .bubble-popover-body {
   flex: 1 1 auto;
   overflow-y: auto;

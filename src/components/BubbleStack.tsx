@@ -22,7 +22,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { updateHitRegion } from "../hitRegions";
-import { useHermesTask } from "../hooks/useHermesTask";
+import { useHermesTask, type TaskStatus } from "../hooks/useHermesTask";
 import {
   DEFAULT_SYSTEM_PROMPTS,
   type BubbleKind,
@@ -61,6 +61,17 @@ interface ConversationMessage {
   content: string;
 }
 
+interface BubbleSession {
+  id: string;
+  title: string;
+  sessionId: string | null;
+  messages: ConversationMessage[];
+  output: string;
+  status: TaskStatus;
+  errorMessage: string | null;
+  unread: boolean;
+}
+
 const BUBBLES: BubbleConfig[] = [
   {
     kind: "research",
@@ -81,6 +92,29 @@ const BUBBLES: BubbleConfig[] = [
     multiTurn: false,
   },
 ];
+
+function createLocalId(prefix: string): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random()}`;
+}
+
+function createBubbleSession(index: number): BubbleSession {
+  return {
+    id: createLocalId("session"),
+    title: `Session ${index}`,
+    sessionId: null,
+    messages: [],
+    output: "",
+    status: "idle",
+    errorMessage: null,
+    unread: false,
+  };
+}
+
+function titleFromText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "Untitled";
+  return normalized.length > 14 ? `${normalized.slice(0, 14)}...` : normalized;
+}
 
 export default function BubbleStack({
   petPos,
@@ -197,11 +231,15 @@ function Bubble({
   onWaitingOutputChange,
 }: BubbleProps) {
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [sessions, setSessions] = useState<BubbleSession[]>(() => [
+    createBubbleSession(1),
+  ]);
+  const [activeSessionId, setActiveSessionId] = useState(() => sessions[0].id);
   const inputRef = useRef<HTMLInputElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverBodyRef = useRef<HTMLDivElement>(null);
   const currentAssistantMessageIdRef = useRef<string | null>(null);
+  const runningSessionIdRef = useRef<string | null>(null);
 
   // 每个气泡一个独立的 task hook
   const task = useHermesTask();
@@ -209,37 +247,105 @@ function Bubble({
   // running = starting 或 streaming
   const isRunning = task.status === "starting" || task.status === "streaming";
   const isWaitingForOutput = isRunning;
+  const activeSession =
+    sessions.find((session) => session.id === activeSessionId) ?? sessions[0];
 
   // 红点：done / error 时挂红点提示（直到用户打开浮窗看过）
-  const hasUnreadResult =
-    !popoverOpen && (task.status === "done" || task.status === "error");
+  const hasUnreadResult = sessions.some((session) => session.unread);
+
+  function handleNewSession() {
+    if (isRunning) return;
+    const next = createBubbleSession(sessions.length + 1);
+    setSessions((prev) => [...prev, next]);
+    setActiveSessionId(next.id);
+    currentAssistantMessageIdRef.current = null;
+    onPopoverToggle(true);
+    task.reset();
+  }
+
+  function handleDeleteSession(sessionId: string) {
+    if (isRunning) return;
+    setSessions((prev) => {
+      if (prev.length === 1) {
+        const replacement = createBubbleSession(1);
+        setActiveSessionId(replacement.id);
+        task.reset();
+        return [replacement];
+      }
+
+      const idx = prev.findIndex((session) => session.id === sessionId);
+      const next = prev.filter((session) => session.id !== sessionId);
+      if (sessionId === activeSessionId) {
+        const fallback = next[Math.max(0, idx - 1)] ?? next[0];
+        setActiveSessionId(fallback.id);
+        task.reset({ keepSession: false });
+      }
+      return next;
+    });
+  }
+
+  function handleSelectSession(sessionId: string) {
+    if (isRunning) return;
+    setActiveSessionId(sessionId);
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === sessionId ? { ...session, unread: false } : session,
+      ),
+    );
+    onPopoverToggle(true);
+    task.reset({ keepSession: false });
+  }
 
   // 提交
   function handleSubmit() {
     const text = input.trim();
-    if (!text) return;
+    if (!text || !activeSession) return;
 
+    const sessionId = activeSession.id;
+    runningSessionIdRef.current = sessionId;
+    let assistantMessageId: string | null = null;
     if (cfg.multiTurn) {
-      const assistantMessageId = globalThis.crypto?.randomUUID?.() ?? `assistant-${Date.now()}`;
+      assistantMessageId = createLocalId("assistant");
       currentAssistantMessageIdRef.current = assistantMessageId;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: globalThis.crypto?.randomUUID?.() ?? `user-${Date.now()}`,
-          role: "user",
-          content: text,
-        },
-        {
-          id: assistantMessageId,
-          role: "assistant",
-          content: "",
-        },
-      ]);
     }
 
-    // dialog 多轮：第二轮起带 sessionId，不再带 systemPrompt
-    const submitArgs = cfg.multiTurn && task.sessionId
-      ? { text, sessionId: task.sessionId }
+    setSessions((prev) =>
+      prev.map((session) => {
+        if (session.id !== sessionId) return session;
+        const nextTitle =
+          session.title.startsWith("Session ") ? titleFromText(text) : session.title;
+        const nextMessages =
+          cfg.multiTurn && assistantMessageId
+            ? [
+                ...session.messages,
+                {
+                  id: createLocalId("user"),
+                  role: "user" as const,
+                  content: text,
+                },
+                {
+                  id: assistantMessageId,
+                  role: "assistant" as const,
+                  content: "",
+                },
+              ]
+            : session.messages;
+
+        return {
+          ...session,
+          title: nextTitle,
+          messages: nextMessages,
+          output: "",
+          status: "starting",
+          errorMessage: null,
+          unread: false,
+        };
+      }),
+    );
+
+    // dialog 多轮：第二轮起带 Hermes sessionId，不再带 systemPrompt
+    const submitArgs = cfg.multiTurn && activeSession.sessionId
+      ? { text, sessionId: activeSession.sessionId }
       : { text, systemPrompt: DEFAULT_SYSTEM_PROMPTS[cfg.kind] };
 
     task.submit(submitArgs);
@@ -278,26 +384,63 @@ function Bubble({
     }
   }, [popoverOpen, cfg.multiTurn]);
 
-  // dialog 浮窗展示的是当前 session 的消息流：右侧用户问题，左侧 Hermes 回复。
+  // 将 useHermesTask 的单任务输出同步回当前运行的本地 session tab。
   useEffect(() => {
-    if (!cfg.multiTurn) return;
+    const targetSessionId = runningSessionIdRef.current;
+    if (!targetSessionId) return;
     const assistantMessageId = currentAssistantMessageIdRef.current;
-    if (!assistantMessageId) return;
-    setMessages((prev) =>
-      prev.map((message) =>
-        message.id === assistantMessageId
-          ? { ...message, content: task.output }
-          : message,
-      ),
+    setSessions((prev) =>
+      prev.map((session) => {
+        if (session.id !== targetSessionId) return session;
+        const messages =
+          cfg.multiTurn && assistantMessageId
+            ? session.messages.map((message) =>
+                message.id === assistantMessageId
+                  ? { ...message, content: task.output }
+                  : message,
+              )
+            : session.messages;
+
+        return {
+          ...session,
+          output: task.output,
+          messages,
+          sessionId: task.sessionId ?? session.sessionId,
+          status: task.status,
+          errorMessage: task.errorMessage,
+        };
+      }),
     );
-  }, [cfg.multiTurn, task.output]);
+  }, [cfg.multiTurn, task.output, task.sessionId, task.status, task.errorMessage]);
 
   useEffect(() => {
-    if (!cfg.multiTurn) return;
+    const targetSessionId = runningSessionIdRef.current;
+    if (!targetSessionId) return;
+    if (task.status === "done" || task.status === "error") {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === targetSessionId
+            ? { ...session, unread: !popoverOpen || activeSessionId !== targetSessionId }
+            : session,
+        ),
+      );
+    }
     if (task.status === "done" || task.status === "error" || task.status === "cancelled") {
       currentAssistantMessageIdRef.current = null;
+      runningSessionIdRef.current = null;
     }
-  }, [cfg.multiTurn, task.status]);
+  }, [activeSessionId, popoverOpen, task.status]);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.id === activeSessionId && session.unread
+          ? { ...session, unread: false }
+          : session,
+      ),
+    );
+  }, [activeSessionId, popoverOpen]);
 
   useEffect(() => {
     onWaitingOutputChange?.(cfg.kind, isWaitingForOutput);
@@ -308,15 +451,15 @@ function Bubble({
     if (!popoverOpen || !cfg.multiTurn) return;
     const body = popoverBodyRef.current;
     body?.scrollTo({ top: body.scrollHeight });
-  }, [popoverOpen, cfg.multiTurn, messages, task.output]);
+  }, [popoverOpen, cfg.multiTurn, activeSession?.messages, activeSession?.output]);
 
   // 状态色（V1 简化：idle 灰 / running 红 / done 绿 / error 红）
   const dotColor = useMemo(() => {
     if (isRunning) return "#E94B4B"; // 红脸
-    if (task.status === "error") return "#E94B4B";
-    if (task.status === "done") return "#4FB477"; // 绿色提示
+    if (activeSession?.status === "error") return "#E94B4B";
+    if (activeSession?.status === "done") return "#4FB477"; // 绿色提示
     return "#9AA0A6";
-  }, [isRunning, task.status]);
+  }, [activeSession?.status, isRunning]);
 
   return (
     <>
@@ -393,27 +536,64 @@ function Bubble({
           <div className="bubble-popover-header">
             <span className="bubble-popover-title">{cfg.label}</span>
             <span className="bubble-popover-status">
-              {task.status === "idle" && "等待输入"}
-              {task.status === "starting" && "启动中…"}
-              {task.status === "streaming" && "运行中…"}
-              {task.status === "done" && "完成"}
-              {task.status === "error" && "出错"}
-              {task.status === "cancelled" && "已取消"}
+              {activeSession?.status === "idle" && "等待输入"}
+              {activeSession?.status === "starting" && "启动中…"}
+              {activeSession?.status === "streaming" && "运行中…"}
+              {activeSession?.status === "done" && "完成"}
+              {activeSession?.status === "error" && "出错"}
+              {activeSession?.status === "cancelled" && "已取消"}
             </span>
             <button
               className="bubble-popover-close"
               onClick={() => {
                 onPopoverToggle(false);
-                if (cfg.multiTurn) {
-                  // 对话气泡的 × = 完全重置
-                  currentAssistantMessageIdRef.current = null;
-                  setMessages([]);
-                  task.reset();
-                }
               }}
               title="关闭"
             >
               ×
+            </button>
+          </div>
+          <div className="bubble-session-tabs">
+            {sessions.map((session) => (
+              <button
+                key={session.id}
+                className={`bubble-session-tab${session.id === activeSessionId ? " is-active" : ""}${session.unread ? " has-unread" : ""}`}
+                onClick={() => handleSelectSession(session.id)}
+                disabled={isRunning}
+                title={session.title}
+              >
+                <span className="bubble-session-tab-title">
+                  {session.title}
+                </span>
+                <span
+                  className="bubble-session-tab-delete"
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDeleteSession(session.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleDeleteSession(session.id);
+                    }
+                  }}
+                  aria-label={`删除 ${session.title}`}
+                  aria-disabled={isRunning}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+            <button
+              className="bubble-session-new"
+              onClick={handleNewSession}
+              disabled={isRunning}
+              title="新建 session"
+            >
+              +
             </button>
           </div>
           <div
@@ -421,9 +601,9 @@ function Bubble({
             className={`bubble-popover-body${cfg.multiTurn ? " is-conversation" : ""}`}
           >
             {cfg.multiTurn ? (
-              messages.length > 0 ? (
+              activeSession?.messages.length ? (
                 <div className="conversation-list">
-                  {messages.map((message) => (
+                  {activeSession.messages.map((message) => (
                     <div
                       key={message.id}
                       className={`conversation-row is-${message.role}`}
@@ -431,7 +611,9 @@ function Bubble({
                       <div className="conversation-message">
                         {message.content || (
                           <span className="conversation-message-pending">
-                            {isRunning ? "Hermes 正在想…" : "没有收到回复。"}
+                            {isRunning && runningSessionIdRef.current === activeSessionId
+                              ? "Hermes 正在想…"
+                              : "没有收到回复。"}
                           </span>
                         )}
                       </div>
@@ -443,22 +625,22 @@ function Bubble({
                   在上方输入框里发条消息开始。
                 </span>
               )
-            ) : task.output || (
+            ) : activeSession?.output || (
               <span className="bubble-popover-empty">
-                {task.status === "idle"
+                {activeSession?.status === "idle"
                   ? "在上方输入框里发条消息开始。"
                   : "等待输出…"}
               </span>
             )}
-            {task.errorMessage && (
+            {activeSession?.errorMessage && (
               <div className="bubble-popover-error">
-                {task.errorMessage}
+                {activeSession.errorMessage}
               </div>
             )}
           </div>
-          {task.sessionId && cfg.multiTurn && (
+          {activeSession?.sessionId && cfg.multiTurn && (
             <div className="bubble-popover-footer">
-              session: <code>{task.sessionId.slice(0, 8)}…</code>
+              session: <code>{activeSession.sessionId.slice(0, 8)}…</code>
             </div>
           )}
         </div>
