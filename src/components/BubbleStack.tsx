@@ -46,8 +46,6 @@ interface BubbleConfig {
   kind: BubbleKind;
   label: string;
   placeholder: string;
-  /** 是否首次提交后保持展开（dialog = true，其他单轮） */
-  keepOpenAfterSubmit: boolean;
   /** 是否多轮续接（dialog = true） */
   multiTurn: boolean;
 }
@@ -57,21 +55,18 @@ const BUBBLES: BubbleConfig[] = [
     kind: "research",
     label: "research",
     placeholder: "研究主题…",
-    keepOpenAfterSubmit: false,
     multiTurn: false,
   },
   {
     kind: "dialog",
     label: "对话",
     placeholder: "说点什么…",
-    keepOpenAfterSubmit: true,
     multiTurn: true,
   },
   {
     kind: "cowork",
     label: "cowork",
     placeholder: "交个任务…",
-    keepOpenAfterSubmit: false,
     multiTurn: false,
   },
 ];
@@ -188,10 +183,8 @@ function Bubble({
     task.submit(submitArgs);
     setInput("");
 
-    // dialog 提交后保持浮窗打开（看流式输出）
-    if (cfg.keepOpenAfterSubmit) {
-      onPopoverToggle(true);
-    }
+    // 三个任务提交后都打开浮窗，让用户能直接看到流式输出。
+    onPopoverToggle(true);
   }
 
   // 点击气泡（非展开态时）→ 展开浮窗看历史

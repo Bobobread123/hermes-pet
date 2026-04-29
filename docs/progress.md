@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-04-29 — 三气泡提交后无可见输出
+
+### 当前结果
+
+- ✅ 三个任务气泡（research / 对话 / cowork）提交后都会自动打开对应结果浮窗
+- ✅ `useHermesTask` 改为前端预生成 `task_id`，再调用 `hermes_start_chat`，避免早到事件被过滤
+- ✅ `npm run build` 通过
+- ✅ Rust runner 日志预览支持中文 system prompt，不再因 UTF-8 截断 panic；`cargo check` 通过
+
+### 本次踩坑与修复
+
+| 问题 | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| research/cowork 输入后看不到返回 | 后端日志已有 `EMIT chunk -> Ok("ok")`，UI 没有弹出结果 | 三气泡重构后只有 dialog 会 `onPopoverToggle(true)`；research/cowork 的输出留在 hook state 里但浮窗未打开 | 三个气泡提交后统一打开结果浮窗，直接展示流式输出 |
+| 事件过滤仍有竞态风险 | Hermes 若快速返回，前端可能漏掉 session/chunk/done | `currentTaskIdRef` 原本在 `invoke()` 返回后才设置，后端在返回前已经可能开始 emit | 前端先生成并登记 `task_id`，传给后端复用 |
+| 中文 system prompt 触发后端 panic | 输入后没有任何回答，日志显示 `end byte index 60 is not a char boundary` | 调试日志用 `&a[..60]` 按字节截断中文字符串，切到 UTF-8 字符中间 | 改为 `chars().take(60).collect()` 按字符截断 |
+
+---
+
 ## 2026-04-29 — 透明窗口鼠标穿透修复
 
 ### 当前结果

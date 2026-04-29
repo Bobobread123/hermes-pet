@@ -97,6 +97,10 @@ export interface UseHermesTaskApi extends UseHermesTaskState {
   reset: (opts?: { keepSession?: boolean }) => void;
 }
 
+function createTaskId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random()}`;
+}
+
 /**
  * useHermesTask —— 单任务生命周期管理。
  *
@@ -197,17 +201,21 @@ export function useHermesTask(): UseHermesTaskApi {
       }
     }
 
+    const taskId = createTaskId();
+    currentTaskIdRef.current = taskId;
+
     // 进入 starting 态，清空上一轮 output
     setState((s) => ({
       status: "starting",
       output: "",
       sessionId: args.sessionId ?? s.sessionId, // 续接时保留旧 session
-      taskId: null,
+      taskId,
       errorMessage: null,
     }));
 
     const backendArgs: StartChatBackendArgs = {
       text,
+      task_id: taskId,
     };
     if (args.sessionId) {
       backendArgs.session_id = args.sessionId;
@@ -220,8 +228,10 @@ export function useHermesTask(): UseHermesTaskApi {
       const result = await invoke<StartChatResult>("hermes_start_chat", {
         args: backendArgs,
       });
-      currentTaskIdRef.current = result.task_id;
-      setState((s) => ({ ...s, taskId: result.task_id }));
+      if (result.task_id !== taskId) {
+        currentTaskIdRef.current = result.task_id;
+        setState((s) => ({ ...s, taskId: result.task_id }));
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       currentTaskIdRef.current = null;

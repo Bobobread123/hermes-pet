@@ -214,8 +214,13 @@ pub async fn hermes_start_chat(
         .enumerate()
         .map(|(i, a)| {
             // 最后一个是正文，截断
-            if i == cmd_args.len() - 1 && a.len() > 60 {
-                format!("\"{}…[{}chars]\"", &a[..60].replace('\n', "\\n"), a.len())
+            if i == cmd_args.len() - 1 && a.chars().count() > 60 {
+                let preview: String = a.chars().take(60).collect();
+                format!(
+                    "\"{}…[{}chars]\"",
+                    preview.replace('\n', "\\n"),
+                    a.chars().count()
+                )
             } else if a.contains(' ') {
                 format!("\"{a}\"")
             } else {
