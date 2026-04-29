@@ -15,7 +15,6 @@ import "./PetCircle.css";
 const SIZE = 100;
 const RADIUS = SIZE / 2;
 const SCALE = SIZE / 200;
-const LIFT_OFFSET = 120;
 
 function s(value: number): number {
   return value * SCALE;
@@ -24,8 +23,6 @@ function s(value: number): number {
 interface PetCircleProps {
   /** 等待 / 接收 Hermes 输出时显示腮红 */
   blushing?: boolean;
-  /** 对话大框展开时上移避让 */
-  lifted?: boolean;
   /** 把当前位置和尺寸暴露给上层（BubbleStack 跟随定位用） */
   onPosChange?: (pos: { x: number; y: number; size: number }) => void;
 }
@@ -34,7 +31,6 @@ export const PET_SIZE = SIZE;
 
 export default function PetCircle({
   blushing = false,
-  lifted = false,
   onPosChange,
 }: PetCircleProps) {
   const [pos, setPos] = useState(() => ({
@@ -48,11 +44,9 @@ export default function PetCircle({
   const [moves, setMoves] = useState(0);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
-  const liftedRef = useRef(lifted);
-  liftedRef.current = lifted;
   const visualPos = {
     x: pos.x,
-    y: lifted ? Math.max(0, pos.y - LIFT_OFFSET) : pos.y,
+    y: pos.y,
   };
   const visualPosRef = useRef(visualPos);
   visualPosRef.current = visualPos;
@@ -89,10 +83,9 @@ export default function PetCircle({
       setMouse({ x: Math.round(x), y: Math.round(y) });
 
       if (dragRef.current) {
-        const lift = liftedRef.current ? LIFT_OFFSET : 0;
         setPos({
           x: x - dragRef.current.dx,
-          y: y - dragRef.current.dy + lift,
+          y: y - dragRef.current.dy,
         });
         return;
       }
@@ -128,7 +121,7 @@ export default function PetCircle({
   return (
     <>
       <div
-        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}${lifted ? " is-lifted" : ""}${dragging ? " is-dragging" : ""}`}
+        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}${dragging ? " is-dragging" : ""}`}
         style={{
           width: SIZE,
           height: SIZE,

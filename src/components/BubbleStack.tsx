@@ -37,8 +37,6 @@ interface BubbleStackProps {
   petSize: number;
   /** 任一气泡等待 / 接收 Hermes 输出时，上报给桌宠本体做表情反馈 */
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
-  /** 对话记录大框打开时，让桌宠上移避让 */
-  onConversationLargeChange?: (large: boolean) => void;
 }
 
 const STACK_WIDTH_COLLAPSED = 24; // 收起态：仅小圆点的列宽
@@ -52,6 +50,7 @@ const POPOVER_MAX_HEIGHT = 320;
 const POPOVER_LARGE_WIDTH = 640;
 const POPOVER_LARGE_MAX_HEIGHT = 560;
 const POPOVER_VIEWPORT_MARGIN = 16;
+const POPOVER_ANIMATION_MS = 360;
 const FILE_CHIP_STRIP_HEIGHT = 36;
 
 interface BubbleConfig {
@@ -83,6 +82,12 @@ interface DropRequest {
   id: string;
   kind: BubbleKind;
   paths: string[];
+}
+
+interface PopoverSnapshot {
+  position: { left: number; top: number };
+  size: { width: number; maxHeight: number };
+  placement: "above" | "side";
 }
 
 type DragDropPosition = {
@@ -168,7 +173,6 @@ export default function BubbleStack({
   petPos,
   petSize,
   onWaitingOutputChange,
-  onConversationLargeChange,
 }: BubbleStackProps) {
   const [hovered, setHovered] = useState(false);
   // 当前打开浮窗的气泡（最多一个）。null = 都没开
@@ -350,7 +354,6 @@ export default function BubbleStack({
               });
             }}
             onWaitingOutputChange={onWaitingOutputChange}
-            onConversationLargeChange={onConversationLargeChange}
             dropRequest={dropRequest}
             isDragTarget={dragTargetKind === cfg.kind}
             droppedFilePaths={droppedPathsByBubble[cfg.kind]}
@@ -389,7 +392,6 @@ interface BubbleProps {
   onPopoverToggle: (open: boolean) => void;
   onFocusChange: (focused: boolean) => void;
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
-  onConversationLargeChange?: (large: boolean) => void;
   dropRequest: DropRequest | null;
   isDragTarget: boolean;
   droppedFilePaths: string[];
@@ -407,7 +409,6 @@ function Bubble({
   onPopoverToggle,
   onFocusChange,
   onWaitingOutputChange,
-  onConversationLargeChange,
   dropRequest,
   isDragTarget,
   droppedFilePaths,
@@ -420,12 +421,15 @@ function Bubble({
   const [activeSessionId, setActiveSessionId] = useState(() => sessions[0].id);
   const [generationCollapsed, setGenerationCollapsed] = useState(false);
   const [popoverLarge, setPopoverLarge] = useState(false);
+  const [popoverClosing, setPopoverClosing] = useState(false);
+  const [popoverSnapshot, setPopoverSnapshot] = useState<PopoverSnapshot | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverBodyRef = useRef<HTMLDivElement>(null);
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const runningSessionIdRef = useRef<string | null>(null);
   const lastDropRequestIdRef = useRef<string | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
 
   // 每个气泡一个独立的 task hook
   const task = useHermesTask();
@@ -488,6 +492,28 @@ function Bubble({
     );
     onPopoverToggle(true);
     resetTaskView({ keepSession: false });
+  }
+
+  function clearCloseTimer() {
+    if (closeTimerRef.current === null) return;
+    window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }
+
+  function closePopoverWithAnimation(onClosed: () => void) {
+    clearCloseTimer();
+    setPopoverSnapshot({
+      position: popoverPosition,
+      size: popoverSize,
+      placement: popoverPlacement,
+    });
+    setPopoverClosing(true);
+    onClosed();
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setPopoverClosing(false);
+      setPopoverSnapshot(null);
+    }, POPOVER_ANIMATION_MS);
   }
 
   // 提交
@@ -571,12 +597,14 @@ function Bubble({
       openBubbleView();
       return;
     }
-    onPopoverToggle(nextOpen);
+    closePopoverWithAnimation(() => onPopoverToggle(false));
   }
 
   function handleCollapseGeneration() {
-    setGenerationCollapsed(true);
-    onPopoverToggle(false);
+    closePopoverWithAnimation(() => {
+      setGenerationCollapsed(true);
+      onPopoverToggle(false);
+    });
   }
 
   function handleExpandGeneration() {
@@ -589,7 +617,7 @@ function Bubble({
     : { width: POPOVER_WIDTH, maxHeight: POPOVER_MAX_HEIGHT };
   const popoverPosition = {
     left: popoverLarge
-      ? clampPopoverLeft(popoverAnchor.left, popoverSize.width)
+      ? clampPopoverLeft(popoverAnchor.left + POPOVER_WIDTH - popoverSize.width, popoverSize.width)
       : popoverAnchor.left,
     top: Math.max(
       POPOVER_VIEWPORT_MARGIN,
@@ -598,6 +626,12 @@ function Bubble({
         : popoverAnchor.top,
     ),
   };
+  const renderedPopoverPosition =
+    popoverClosing && popoverSnapshot ? popoverSnapshot.position : popoverPosition;
+  const renderedPopoverSize =
+    popoverClosing && popoverSnapshot ? popoverSnapshot.size : popoverSize;
+  const renderedPopoverPlacement =
+    popoverClosing && popoverSnapshot ? popoverSnapshot.placement : popoverPlacement;
 
   // 浮窗 hit region
   useEffect(() => {
@@ -630,6 +664,16 @@ function Bubble({
       inputRef.current?.focus();
     }
   }, [popoverOpen, cfg.multiTurn]);
+
+  useEffect(() => {
+    if (popoverOpen) {
+      clearCloseTimer();
+      setPopoverClosing(false);
+      setPopoverSnapshot(null);
+    }
+  }, [popoverOpen]);
+
+  useEffect(() => () => clearCloseTimer(), []);
 
   // 将 useHermesTask 的单任务输出同步回当前运行的本地 session tab。
   useEffect(() => {
@@ -693,17 +737,6 @@ function Bubble({
     onWaitingOutputChange?.(cfg.kind, isWaitingForOutput);
     return () => onWaitingOutputChange?.(cfg.kind, false);
   }, [cfg.kind, isWaitingForOutput, onWaitingOutputChange]);
-
-  useEffect(() => {
-    const isLargeOpen = popoverOpen && popoverLarge && !generationCollapsed;
-    onConversationLargeChange?.(isLargeOpen);
-    return () => onConversationLargeChange?.(false);
-  }, [
-    generationCollapsed,
-    onConversationLargeChange,
-    popoverLarge,
-    popoverOpen,
-  ]);
 
   useEffect(() => {
     if (!popoverOpen || !cfg.multiTurn) return;
@@ -831,16 +864,16 @@ function Bubble({
       )}
 
       {/* 结果浮窗 */}
-      {visible && popoverOpen && !generationCollapsed && (
+      {visible && (popoverOpen || popoverClosing) && (!generationCollapsed || popoverClosing) && (
         <div
           ref={popoverRef}
-          className={`bubble-popover${popoverLarge ? " is-large" : ""}`}
+          className={`bubble-popover${popoverLarge ? " is-large" : ""}${popoverClosing ? " is-closing" : ""}`}
           style={{
-            left: popoverPosition.left,
-            top: popoverPosition.top,
-            width: popoverSize.width,
-            height: popoverPlacement === "above" ? popoverSize.maxHeight : undefined,
-            maxHeight: popoverSize.maxHeight,
+            left: renderedPopoverPosition.left,
+            top: renderedPopoverPosition.top,
+            width: renderedPopoverSize.width,
+            height: renderedPopoverPlacement === "above" ? renderedPopoverSize.maxHeight : undefined,
+            maxHeight: renderedPopoverSize.maxHeight,
           }}
         >
           <div className="bubble-popover-header">
@@ -859,12 +892,12 @@ function Bubble({
               title={popoverLarge ? "Shrink panel" : "Expand panel"}
               aria-label={popoverLarge ? "Shrink panel" : "Expand panel"}
             >
-              {popoverLarge ? "□" : "▣"}
+              {popoverLarge ? "▣" : "□"}
             </button>
             <button
               className="bubble-popover-close"
               onClick={() => {
-                onPopoverToggle(false);
+                closePopoverWithAnimation(() => onPopoverToggle(false));
               }}
               title="Close"
             >

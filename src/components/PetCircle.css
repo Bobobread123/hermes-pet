@@ -25,10 +25,6 @@
   transition: filter 260ms ease;
 }
 
-.pet-circle.is-lifted {
-  filter: drop-shadow(0 8px 18px rgba(93, 168, 232, 0.24));
-}
-
 .pet-circle.is-hovered {
   filter: drop-shadow(0 4px 12px rgba(212, 184, 150, 0.6));
 }
