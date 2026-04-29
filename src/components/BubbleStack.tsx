@@ -3,14 +3,16 @@
 // 布局（V1）：
 //   - 渲染在 PetCircle 左侧
 //   - 默认收起：竖向三个小圆点（每个气泡 16px），用户能看到入口存在
-//   - hover 桌宠区域 / 气泡区域 → 整个 stack 展开成药丸状（带输入框）
-//   - 鼠标离开 trigger 区域 + 没有正在跑的任务 + 没有打开的浮窗 → 收回
+//   - hover 桌宠区域 / 气泡区域 → 三个入口展开成药丸状（带输入框）
+//   - 某个输入被选中 / 浮窗打开后，只保留当前入口，其它入口收起
+//   - 当前入口移动到 stack 顶部，浮窗贴在它下方
 //
 // 三个气泡顺序（从上到下）：research / dialog / cowork
 //
 // hit region：
 //   - 收起态：上报『trigger 矩形』（覆盖桌宠左侧 + 三个小点）
-//   - 展开态：上报展开后的完整矩形 + 浮窗矩形
+//   - hover 展开态：上报三入口完整矩形
+//   - 单入口激活态：上报当前入口矩形 + 浮窗矩形
 //   每次状态变更通过 updateHitRegion 写入，rAF 合并 invoke。
 //
 // 不在这里做的：
@@ -32,6 +34,8 @@ interface BubbleStackProps {
   petPos: { x: number; y: number };
   /** 桌宠尺寸 */
   petSize: number;
+  /** 任一气泡等待 / 接收 Hermes 输出时，上报给桌宠本体做表情反馈 */
+  onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
 }
 
 const STACK_WIDTH_COLLAPSED = 24; // 收起态：仅小圆点的列宽
@@ -39,7 +43,8 @@ const STACK_WIDTH_EXPANDED = 280; // 展开态：药丸宽度
 const STACK_GAP = 12; // 气泡到桌宠的水平间距
 const BUBBLE_HEIGHT = 40; // 单个气泡（药丸）高度
 const BUBBLE_GAP = 8; // 气泡之间垂直间距
-const POPOVER_WIDTH = 380;
+const POPOVER_GAP = 8;
+const POPOVER_WIDTH = STACK_WIDTH_EXPANDED; // 下方浮窗宽度跟上方选中输入保持一致
 const POPOVER_MAX_HEIGHT = 320;
 
 interface BubbleConfig {
@@ -77,21 +82,28 @@ const BUBBLES: BubbleConfig[] = [
   },
 ];
 
-export default function BubbleStack({ petPos, petSize }: BubbleStackProps) {
+export default function BubbleStack({
+  petPos,
+  petSize,
+  onWaitingOutputChange,
+}: BubbleStackProps) {
   const [hovered, setHovered] = useState(false);
   // 当前打开浮窗的气泡（最多一个）。null = 都没开
   const [openPopover, setOpenPopover] = useState<BubbleKind | null>(null);
+  // 当前被用户选中的输入气泡。选中后只显示这一条，其它 hover 入口收起。
+  const [activeKind, setActiveKind] = useState<BubbleKind | null>(null);
 
-  // stack 是否处于"展开态"（hover OR 任意浮窗打开 OR 任意输入框聚焦）
-  const [hasFocus, setHasFocus] = useState(false);
-  const expanded = hovered || openPopover !== null || hasFocus;
+  // stack 是否处于"展开态"（hover OR 已选中某个输入 / 浮窗打开）
+  const expanded = hovered || activeKind !== null;
+  const activeOnly = activeKind !== null;
 
   // stack 整体位置：桌宠左侧
   const stackWidth = expanded ? STACK_WIDTH_EXPANDED : STACK_WIDTH_COLLAPSED;
-  const stackHeight =
+  const fullStackHeight =
     BUBBLE_HEIGHT * BUBBLES.length + BUBBLE_GAP * (BUBBLES.length - 1);
+  const stackHeight = activeOnly ? BUBBLE_HEIGHT : fullStackHeight;
   const stackX = petPos.x - STACK_GAP - stackWidth;
-  const stackY = petPos.y + (petSize - stackHeight) / 2;
+  const stackY = petPos.y + (petSize - fullStackHeight) / 2;
 
   // ---- hit region 上报 ----
   useEffect(() => {
@@ -122,16 +134,34 @@ export default function BubbleStack({ petPos, petSize }: BubbleStackProps) {
             key={cfg.kind}
             cfg={cfg}
             expanded={expanded}
+            visible={!activeOnly || activeKind === cfg.kind}
             popoverOpen={openPopover === cfg.kind}
-            yOffset={idx * (BUBBLE_HEIGHT + BUBBLE_GAP)}
-            onPopoverToggle={(open) =>
-              setOpenPopover(open ? cfg.kind : null)
+            yOffset={
+              activeOnly ? 0 : idx * (BUBBLE_HEIGHT + BUBBLE_GAP)
             }
-            onFocusChange={setHasFocus}
+            onPopoverToggle={(open) => {
+              setOpenPopover(open ? cfg.kind : null);
+              setActiveKind(open ? cfg.kind : null);
+            }}
+            onFocusChange={(focused) => {
+              if (focused) {
+                setOpenPopover(cfg.kind);
+                setActiveKind(cfg.kind);
+                return;
+              }
+
+              setActiveKind((current) => {
+                if (openPopover === cfg.kind) return current;
+                return current === cfg.kind ? null : current;
+              });
+            }}
+            onWaitingOutputChange={onWaitingOutputChange}
             // 浮窗位置基准：气泡所在的全局 y
             popoverAnchor={{
-              left: stackX + stackWidth + 8,
-              top: stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP),
+              left: activeOnly ? stackX : stackX + stackWidth + 8,
+              top: activeOnly
+                ? stackY + BUBBLE_HEIGHT + POPOVER_GAP
+                : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP),
             }}
           />
         ))}
@@ -146,21 +176,25 @@ export default function BubbleStack({ petPos, petSize }: BubbleStackProps) {
 interface BubbleProps {
   cfg: BubbleConfig;
   expanded: boolean;
+  visible: boolean;
   popoverOpen: boolean;
   yOffset: number;
   popoverAnchor: { left: number; top: number };
   onPopoverToggle: (open: boolean) => void;
   onFocusChange: (focused: boolean) => void;
+  onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
 }
 
 function Bubble({
   cfg,
   expanded,
+  visible,
   popoverOpen,
   yOffset,
   popoverAnchor,
   onPopoverToggle,
   onFocusChange,
+  onWaitingOutputChange,
 }: BubbleProps) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -174,6 +208,7 @@ function Bubble({
 
   // running = starting 或 streaming
   const isRunning = task.status === "starting" || task.status === "streaming";
+  const isWaitingForOutput = isRunning;
 
   // 红点：done / error 时挂红点提示（直到用户打开浮窗看过）
   const hasUnreadResult =
@@ -265,6 +300,11 @@ function Bubble({
   }, [cfg.multiTurn, task.status]);
 
   useEffect(() => {
+    onWaitingOutputChange?.(cfg.kind, isWaitingForOutput);
+    return () => onWaitingOutputChange?.(cfg.kind, false);
+  }, [cfg.kind, isWaitingForOutput, onWaitingOutputChange]);
+
+  useEffect(() => {
     if (!popoverOpen || !cfg.multiTurn) return;
     const body = popoverBodyRef.current;
     body?.scrollTo({ top: body.scrollHeight });
@@ -281,7 +321,7 @@ function Bubble({
   return (
     <>
       {/* 收起态：小圆点 */}
-      {!expanded && (
+      {visible && !expanded && (
         <button
           className="bubble-dot"
           style={{
@@ -296,7 +336,7 @@ function Bubble({
       )}
 
       {/* 展开态：药丸 */}
-      {expanded && (
+      {visible && expanded && (
         <div
           className={`bubble-pill${isRunning ? " is-running" : ""}`}
           style={{ top: yOffset, height: BUBBLE_HEIGHT }}
@@ -339,7 +379,7 @@ function Bubble({
       )}
 
       {/* 结果浮窗 */}
-      {popoverOpen && (
+      {visible && popoverOpen && (
         <div
           ref={popoverRef}
           className="bubble-popover"

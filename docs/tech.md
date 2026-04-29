@@ -369,7 +369,7 @@ hermes-pet/
 **阶段一实际进展（2026-04-28）：**
 
 - ✅ 透明窗口 + always-on-top（NSWindow level=floating）+ all-spaces + never-hide：稳定
-- ✅ 200×200 米色 SVG 圆，铺在透明全屏窗口里
+- ✅ 100×100 米色 SVG 圆，铺在透明全屏窗口里（最初 spike 为 200×200，2026-04-29 按 V1 视觉调小一半）
 - ✅ 圆内 hover 表情 + 按住拖动：稳定
 - ⚠️ **圆外点穿桌面：未通过**。两条路都失败：
   - 前端切 `set_ignore_cursor_events`：穿透后 webview 收不到事件，没法切回，死锁

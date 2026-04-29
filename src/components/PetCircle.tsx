@@ -1,4 +1,4 @@
-// 流 A spike 用占位 pet：一个 200×200 的米色 SVG 圆。
+// 流 A spike 用占位 pet：一个 100×100 的米色 SVG 圆。
 //
 // 当前架构（2026-04-29）：
 // 1. Rust 启动时窗口铺满主屏 + 默认全穿透
@@ -12,17 +12,27 @@ import { useEffect, useRef, useState } from "react";
 import { updateHitRegion } from "../hitRegions";
 import "./PetCircle.css";
 
-const SIZE = 200;
+const SIZE = 100;
 const RADIUS = SIZE / 2;
+const SCALE = SIZE / 200;
+
+function s(value: number): number {
+  return value * SCALE;
+}
 
 interface PetCircleProps {
+  /** 等待 / 接收 Hermes 输出时显示腮红 */
+  blushing?: boolean;
   /** 把当前位置和尺寸暴露给上层（BubbleStack 跟随定位用） */
   onPosChange?: (pos: { x: number; y: number; size: number }) => void;
 }
 
 export const PET_SIZE = SIZE;
 
-export default function PetCircle({ onPosChange }: PetCircleProps) {
+export default function PetCircle({
+  blushing = false,
+  onPosChange,
+}: PetCircleProps) {
   const [pos, setPos] = useState(() => ({
     x: Math.max(0, window.innerWidth / 2 - SIZE / 2),
     y: Math.max(0, window.innerHeight / 3 - SIZE / 2),
@@ -104,7 +114,7 @@ export default function PetCircle({ onPosChange }: PetCircleProps) {
   return (
     <>
       <div
-        className={`pet-circle${hovered ? " is-hovered" : ""}`}
+        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}`}
         style={{
           width: SIZE,
           height: SIZE,
@@ -118,24 +128,40 @@ export default function PetCircle({ onPosChange }: PetCircleProps) {
               <stop offset="100%" stopColor="#F5E6D3" />
             </radialGradient>
           </defs>
-          <circle cx={SIZE / 2} cy={SIZE / 2} r={SIZE / 2 - 4} fill="url(#petBody)" stroke="#D4B896" strokeWidth="2" />
-          <circle cx={SIZE / 2 - 28} cy={SIZE / 2 - 6} r={hovered ? 4 : 8} fill="#2B2B2B" />
-          <circle cx={SIZE / 2 + 28} cy={SIZE / 2 - 6} r={hovered ? 4 : 8} fill="#2B2B2B" />
+          <circle cx={SIZE / 2} cy={SIZE / 2} r={SIZE / 2 - s(4)} fill="url(#petBody)" stroke="#D4B896" strokeWidth={s(2)} />
+          <circle cx={SIZE / 2 - s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
+          <circle cx={SIZE / 2 + s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
+          <circle
+            className="pet-cheek"
+            cx={SIZE / 2 - s(42)}
+            cy={SIZE / 2 + s(16)}
+            r={s(15)}
+            fill="#F5A0B0"
+            opacity={blushing ? 0.72 : 0}
+          />
+          <circle
+            className="pet-cheek"
+            cx={SIZE / 2 + s(42)}
+            cy={SIZE / 2 + s(16)}
+            r={s(15)}
+            fill="#F5A0B0"
+            opacity={blushing ? 0.72 : 0}
+          />
           <path
             d={
               hovered
-                ? `M ${SIZE / 2 - 18} ${SIZE / 2 + 22} Q ${SIZE / 2} ${SIZE / 2 + 38} ${SIZE / 2 + 18} ${SIZE / 2 + 22}`
-                : `M ${SIZE / 2 - 18} ${SIZE / 2 + 28} Q ${SIZE / 2} ${SIZE / 2 + 32} ${SIZE / 2 + 18} ${SIZE / 2 + 28}`
+                ? `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(22)} Q ${SIZE / 2} ${SIZE / 2 + s(38)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(22)}`
+                : `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(28)} Q ${SIZE / 2} ${SIZE / 2 + s(32)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(28)}`
             }
             fill="none"
             stroke="#2B2B2B"
-            strokeWidth="3"
+            strokeWidth={s(3)}
             strokeLinecap="round"
           />
         </svg>
       </div>
       <div className="pet-debug">
-        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(pos.x)},{Math.round(pos.y)}) hov={String(hovered)}
+        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(pos.x)},{Math.round(pos.y)}) hov={String(hovered)} blush={String(blushing)}
       </div>
     </>
   );

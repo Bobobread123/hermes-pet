@@ -23,9 +23,17 @@
   filter: drop-shadow(0 4px 12px rgba(212, 184, 150, 0.6));
 }
 
+.pet-circle.is-blushing {
+  filter: drop-shadow(0 4px 14px rgba(245, 160, 176, 0.45));
+}
+
 .pet-circle svg {
   display: block;
   pointer-events: auto;
+}
+
+.pet-cheek {
+  transition: opacity 180ms ease;
 }
 
 /* spike 调试条 - 验收完会删除 */

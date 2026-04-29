@@ -12,9 +12,10 @@
 //   - 角色 SVG 替换（流 C 优先级 1）
 //   - 拖入文件接入（流 C）
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import PetCircle, { PET_SIZE } from "./components/PetCircle";
 import BubbleStack from "./components/BubbleStack";
+import type { BubbleKind } from "./lib/prompts";
 import "./App.css";
 
 function App() {
@@ -22,6 +23,11 @@ function App() {
   const [petPos, setPetPos] = useState({
     x: Math.max(0, window.innerWidth / 2 - PET_SIZE / 2),
     y: Math.max(0, window.innerHeight / 3 - PET_SIZE / 2),
+  });
+  const [waitingByBubble, setWaitingByBubble] = useState<Record<BubbleKind, boolean>>({
+    research: false,
+    dialog: false,
+    cowork: false,
   });
 
   const handlePosChange = useCallback(
@@ -31,10 +37,32 @@ function App() {
     [],
   );
 
+  const handleWaitingOutputChange = useCallback(
+    (kind: BubbleKind, waiting: boolean) => {
+      setWaitingByBubble((prev) => {
+        if (prev[kind] === waiting) return prev;
+        return { ...prev, [kind]: waiting };
+      });
+    },
+    [],
+  );
+
+  const isWaitingForOutput = useMemo(
+    () => Object.values(waitingByBubble).some(Boolean),
+    [waitingByBubble],
+  );
+
   return (
     <div className="pet-root">
-      <PetCircle onPosChange={handlePosChange} />
-      <BubbleStack petPos={petPos} petSize={PET_SIZE} />
+      <PetCircle
+        blushing={isWaitingForOutput}
+        onPosChange={handlePosChange}
+      />
+      <BubbleStack
+        petPos={petPos}
+        petSize={PET_SIZE}
+        onWaitingOutputChange={handleWaitingOutputChange}
+      />
     </div>
   );
 }

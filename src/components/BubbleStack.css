@@ -59,7 +59,7 @@
   font-family:
     -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
   font-size: 13px;
-  transition: border-color 200ms ease, box-shadow 200ms ease;
+  transition: top 180ms ease, border-color 200ms ease, box-shadow 200ms ease;
 }
 .bubble-pill.is-running {
   border-color: #e94b4b;
