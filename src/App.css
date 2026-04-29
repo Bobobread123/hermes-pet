@@ -1,20 +1,26 @@
-/* 流 A：全透明根容器 - 整个 webview 不能有任何不透明背景，
-   否则窗口的 transparent:true 会被前端 CSS 盖掉。
-   现在采用「Rust 全局监听 + 主动切窗口穿透」方案，不需要 webview
-   保持非穿透接收事件，因此根容器恢复完全透明。 */
+/* App 根样式 */
 
-html,
-body,
-#root,
 .pet-root {
-  margin: 0;
-  padding: 0;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: transparent !important;
+  pointer-events: none;
 }
 
-.pet-root {
-  position: relative;
+/*
+  整体拖拽容器：PetCircle + BubbleStack 一起 translate，保证同帧移动。
+  正常状态有轻微 transition 做回弹手感；拖拽中去掉 transition 跟手零延迟。
+*/
+.pet-drag-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  will-change: transform;
+  transition: transform 80ms ease-out;
+}
+
+.pet-drag-wrapper.is-dragging {
+  transition: none;
+  cursor: grabbing;
 }

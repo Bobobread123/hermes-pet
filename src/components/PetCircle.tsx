@@ -1,19 +1,16 @@
-// 流 A spike 用占位 pet：一个 100×100 的米色 SVG 圆。
+// PetCircle —— 桌宠占位圆的纯渲染组件。
 //
-// 当前架构（2026-04-29）：
-// 1. Rust 启动时窗口铺满主屏 + 默认全穿透
-// 2. PetCircle 上报 hit region 矩形，鼠标进矩形 Rust 关穿透 → 接管事件
-// 3. 圆几何命中（在矩形 hit region 内再做圆精确判定）：圆内 → hover 表情 + 可拖动
-// 4. 通过 onPosChange 把当前位置外推给 App，用于 BubbleStack 跟随渲染
+// 2026-04-30 重构：位置管理已上移到 App 层（统一 wrapper translate）。
+// 本组件只负责 SVG 渲染 + 样式状态，不再持有 pos state，不再监听鼠标事件。
 //
-// 调试条（左下角黑底白字）spike 验收后删除。
+// Props:
+//   hovered  — 鼠标在圆内（由 App 判定传入）
+//   blushing — 等待 Hermes 输出时显示腮红
+//   dragging — 拖拽中（去掉 transition）
 
-import { useEffect, useRef, useState } from "react";
-import { updateHitRegion } from "../hitRegions";
 import "./PetCircle.css";
 
 const SIZE = 100;
-const RADIUS = SIZE / 2;
 const SCALE = SIZE / 200;
 
 function s(value: number): number {
@@ -21,155 +18,61 @@ function s(value: number): number {
 }
 
 interface PetCircleProps {
-  /** 等待 / 接收 Hermes 输出时显示腮红 */
+  hovered?: boolean;
   blushing?: boolean;
-  /** 把当前位置和尺寸暴露给上层（BubbleStack 跟随定位用） */
-  onPosChange?: (pos: { x: number; y: number; size: number }) => void;
+  dragging?: boolean;
 }
 
 export const PET_SIZE = SIZE;
 
 export default function PetCircle({
+  hovered = false,
   blushing = false,
-  onPosChange,
+  dragging = false,
 }: PetCircleProps) {
-  const [pos, setPos] = useState(() => ({
-    x: Math.max(0, window.innerWidth / 2 - SIZE / 2),
-    y: Math.max(0, window.innerHeight / 3 - SIZE / 2),
-  }));
-  const [dragging, setDragging] = useState(false);
-  const [hovered, setHovered] = useState(false);
-
-  // === spike 调试 state ===
-  const [moves, setMoves] = useState(0);
-  const [mouse, setMouse] = useState({ x: 0, y: 0 });
-
-  const visualPos = {
-    x: pos.x,
-    y: pos.y,
-  };
-  const visualPosRef = useRef(visualPos);
-  visualPosRef.current = visualPos;
-
-  useEffect(() => {
-    updateHitRegion("pet-circle", {
-      x: visualPos.x,
-      y: visualPos.y,
-      width: SIZE,
-      height: SIZE,
-    });
-
-    onPosChange?.({ x: pos.x, y: pos.y, size: SIZE });
-
-    return () => updateHitRegion("pet-circle", null);
-  }, [pos.x, pos.y, visualPos.x, visualPos.y, onPosChange]);
-
-  // 拖动：dragRef 记录鼠标按下时鼠标点相对圆左上的偏移
-  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
-
-  useEffect(() => {
-    function isInsideCircle(x: number, y: number) {
-      const cx = visualPosRef.current.x + RADIUS;
-      const cy = visualPosRef.current.y + RADIUS;
-      const dx = x - cx;
-      const dy = y - cy;
-      return dx * dx + dy * dy <= RADIUS * RADIUS;
-    }
-
-    function onMove(e: MouseEvent) {
-      const x = e.clientX;
-      const y = e.clientY;
-      setMoves((m) => m + 1);
-      setMouse({ x: Math.round(x), y: Math.round(y) });
-
-      if (dragRef.current) {
-        setPos({
-          x: x - dragRef.current.dx,
-          y: y - dragRef.current.dy,
-        });
-        return;
-      }
-
-      const inside = isInsideCircle(x, y);
-      setHovered(inside);
-    }
-
-    function onDown(e: MouseEvent) {
-      if (!isInsideCircle(e.clientX, e.clientY)) return;
-      dragRef.current = {
-        dx: e.clientX - visualPosRef.current.x,
-        dy: e.clientY - visualPosRef.current.y,
-      };
-      setDragging(true);
-    }
-    function onUp() {
-      dragRef.current = null;
-      setDragging(false);
-    }
-
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("mouseup", onUp);
-
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, []);
-
   return (
-    <>
-      <div
-        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}${dragging ? " is-dragging" : ""}`}
-        style={{
-          width: SIZE,
-          height: SIZE,
-          transform: `translate(${visualPos.x}px, ${visualPos.y}px)`,
-        }}
-      >
-        <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          <defs>
-            <radialGradient id="petBody" cx="50%" cy="40%" r="60%">
-              <stop offset="0%" stopColor="#FFF8EC" />
-              <stop offset="100%" stopColor="#F5E6D3" />
-            </radialGradient>
-          </defs>
-          <circle cx={SIZE / 2} cy={SIZE / 2} r={SIZE / 2 - s(4)} fill="url(#petBody)" stroke="#D4B896" strokeWidth={s(2)} />
-          <circle cx={SIZE / 2 - s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
-          <circle cx={SIZE / 2 + s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
-          <circle
-            className="pet-cheek"
-            cx={SIZE / 2 - s(42)}
-            cy={SIZE / 2 + s(16)}
-            r={s(15)}
-            fill="#F5A0B0"
-            opacity={blushing ? 0.72 : 0}
-          />
-          <circle
-            className="pet-cheek"
-            cx={SIZE / 2 + s(42)}
-            cy={SIZE / 2 + s(16)}
-            r={s(15)}
-            fill="#F5A0B0"
-            opacity={blushing ? 0.72 : 0}
-          />
-          <path
-            d={
-              hovered
-                ? `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(22)} Q ${SIZE / 2} ${SIZE / 2 + s(38)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(22)}`
-                : `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(28)} Q ${SIZE / 2} ${SIZE / 2 + s(32)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(28)}`
-            }
-            fill="none"
-            stroke="#2B2B2B"
-            strokeWidth={s(3)}
-            strokeLinecap="round"
-          />
-        </svg>
-      </div>
-      <div className="pet-debug">
-        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(visualPos.x)},{Math.round(visualPos.y)}) hov={String(hovered)} blush={String(blushing)}
-      </div>
-    </>
+    <div
+      className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}${dragging ? " is-dragging" : ""}`}
+      style={{ width: SIZE, height: SIZE }}
+    >
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
+        <defs>
+          <radialGradient id="petBody" cx="50%" cy="40%" r="60%">
+            <stop offset="0%" stopColor="#FFF8EC" />
+            <stop offset="100%" stopColor="#F5E6D3" />
+          </radialGradient>
+        </defs>
+        <circle cx={SIZE / 2} cy={SIZE / 2} r={SIZE / 2 - s(4)} fill="url(#petBody)" stroke="#D4B896" strokeWidth={s(2)} />
+        <circle cx={SIZE / 2 - s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
+        <circle cx={SIZE / 2 + s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
+        <circle
+          className="pet-cheek"
+          cx={SIZE / 2 - s(42)}
+          cy={SIZE / 2 + s(16)}
+          r={s(15)}
+          fill="#F5A0B0"
+          opacity={blushing ? 0.72 : 0}
+        />
+        <circle
+          className="pet-cheek"
+          cx={SIZE / 2 + s(42)}
+          cy={SIZE / 2 + s(16)}
+          r={s(15)}
+          fill="#F5A0B0"
+          opacity={blushing ? 0.72 : 0}
+        />
+        <path
+          d={
+            hovered
+              ? `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(22)} Q ${SIZE / 2} ${SIZE / 2 + s(38)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(22)}`
+              : `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(28)} Q ${SIZE / 2} ${SIZE / 2 + s(32)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(28)}`
+          }
+          fill="none"
+          stroke="#2B2B2B"
+          strokeWidth={s(3)}
+          strokeLinecap="round"
+        />
+      </svg>
+    </div>
   );
 }

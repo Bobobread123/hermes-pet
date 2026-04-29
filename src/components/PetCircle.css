@@ -1,28 +1,18 @@
 /* 流 A 占位 pet 样式 */
 
 .pet-circle {
-  position: fixed;
-  top: 0;
-  left: 0;
-  /* 用 transform 定位，避免 React 重渲染影响拖动手感 */
-  will-change: transform;
+  position: relative;  /* wrapper 内相对定位，不再 fixed */
+  will-change: filter;
   cursor: grab;
-  /* 圆形 hit-area 由 SVG 内部决定；外接矩形也算可点区域，
-     但因为 webview 默认是穿透模式，矩形空白区不会真的吃掉桌面点击。
-     如果后续需要严格"圆形 hit"，可以改用 clip-path: circle(50%); */
   user-select: none;
   -webkit-user-select: none;
-  transition:
-    filter 260ms ease,
-    transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.pet-circle:active {
-  cursor: grabbing;
+  transition: filter 200ms ease;
+  pointer-events: auto;
 }
 
 .pet-circle.is-dragging {
-  transition: filter 260ms ease;
+  cursor: grabbing;
+  transition: filter 200ms ease;
 }
 
 .pet-circle.is-hovered {
@@ -40,19 +30,4 @@
 
 .pet-cheek {
   transition: opacity 180ms ease;
-}
-
-/* spike 调试条 - 验收完会删除 */
-.pet-debug {
-  position: fixed;
-  left: 8px;
-  bottom: 8px;
-  padding: 4px 8px;
-  font: 11px ui-monospace, SF Mono, Menlo, monospace;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.65);
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 9999;
-  white-space: nowrap;
 }

@@ -7,9 +7,8 @@
  */
 
 .bubble-stack {
-  position: fixed;
+  position: absolute;
   pointer-events: auto;
-  /* 收起态用 column 自然堆叠，展开态用绝对定位每个气泡 */
 }
 
 .bubble-stack.is-expanded {
