@@ -1,11 +1,10 @@
 // 桌宠根组件。
 //
-// 拖拽架构（2026-04-30 重构）：
-//   - pos 状态统一在 App 层持有，通过一个 wrapper div 的 transform 整体移动
-//   - PetCircle 和 BubbleStack 都在这个 wrapper 内，保证同帧移动，无撕裂
-//   - PetCircle 不再自己管位置，只负责渲染 + hover/blushing 状态
-//   - BubbleStack 用相对于 wrapper 的偏移定位，不再依赖绝对 petPos
-//   - 鼠标事件在 App 层统一监听，dragRef 记录按下时偏移量
+// 拖拽架构 v2（2026-04-30）：
+//   - 拖拽过程中完全不触发 React 渲染，直接操作 DOM style
+//   - wrapperRef.style.transform 和 popoverPortalOffset 同步更新，零帧延迟
+//   - mouseup 时才 setPos 持久化位置（供 hit region 上报等使用）
+//   - popover 通过 onDragOffset callback 拿到偏移量，直接操作自己的 style
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PetCircle, { PET_SIZE } from "./components/PetCircle";
@@ -29,12 +28,19 @@ function App() {
     cowork: false,
   });
 
+  // 当前位置的 ref（事件回调里用，不触发渲染）
   const posRef = useRef(pos);
   posRef.current = pos;
 
-  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  // wrapper div 的 ref，拖拽时直接操作 style
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // hit region 上报（整个 wrapper 矩形，包含气泡区域由 BubbleStack 自己上报）
+  // BubbleStack 里 popover 的 ref 操作函数，由子组件注册上来
+  const popoverMoveRef = useRef<((dx: number, dy: number) => void) | null>(null);
+
+  const dragRef = useRef<{ dx: number; dy: number; startX: number; startY: number } | null>(null);
+
+  // hit region 上报（位置 commit 到 state 后才更新）
   useEffect(() => {
     updateHitRegion("pet-circle", {
       x: pos.x,
@@ -45,7 +51,7 @@ function App() {
     return () => updateHitRegion("pet-circle", null);
   }, [pos.x, pos.y]);
 
-  // 全局鼠标事件：拖拽 + hover 判定
+  // 全局鼠标事件
   useEffect(() => {
     function isInsideCircle(x: number, y: number) {
       const cx = posRef.current.x + RADIUS;
@@ -57,10 +63,17 @@ function App() {
 
     function onMove(e: MouseEvent) {
       if (dragRef.current) {
-        setPos({
-          x: e.clientX - dragRef.current.dx,
-          y: e.clientY - dragRef.current.dy,
-        });
+        const x = e.clientX - dragRef.current.dx;
+        const y = e.clientY - dragRef.current.dy;
+
+        // 直接操作 DOM，零帧延迟
+        if (wrapperRef.current) {
+          wrapperRef.current.style.transform = `translate(${x}px, ${y}px)`;
+        }
+        // 通知 popover 同步移动（相对于起始位置的 delta）
+        const ddx = x - dragRef.current.startX;
+        const ddy = y - dragRef.current.startY;
+        popoverMoveRef.current?.(ddx, ddy);
         return;
       }
       setHovered(isInsideCircle(e.clientX, e.clientY));
@@ -71,13 +84,22 @@ function App() {
       dragRef.current = {
         dx: e.clientX - posRef.current.x,
         dy: e.clientY - posRef.current.y,
+        startX: posRef.current.x,
+        startY: posRef.current.y,
       };
       setDragging(true);
     }
 
-    function onUp() {
+    function onUp(e: MouseEvent) {
+      if (!dragRef.current) return;
+      const x = e.clientX - dragRef.current.dx;
+      const y = e.clientY - dragRef.current.dy;
       dragRef.current = null;
       setDragging(false);
+      // 拖拽结束，提交到 React state（hit region、BubbleStack petAbsPos 等）
+      setPos({ x, y });
+      // popover 结束漂移，归零 delta（让它回到由 petAbsPos 计算的绝对坐标）
+      popoverMoveRef.current?.(0, 0);
     }
 
     window.addEventListener("mousemove", onMove);
@@ -107,11 +129,8 @@ function App() {
 
   return (
     <div className="pet-root">
-      {/*
-        wrapper 整体 translate：PetCircle + BubbleStack 同帧移动，无撕裂。
-        拖拽时加 is-dragging 去掉 transition，松开后 transition 回弹。
-      */}
       <div
+        ref={wrapperRef}
         className={`pet-drag-wrapper${dragging ? " is-dragging" : ""}`}
         style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
       >
@@ -124,6 +143,7 @@ function App() {
           petSize={PET_SIZE}
           petAbsPos={pos}
           onWaitingOutputChange={handleWaitingOutputChange}
+          onRegisterPopoverMove={(fn) => { popoverMoveRef.current = fn; }}
         />
       </div>
     </div>

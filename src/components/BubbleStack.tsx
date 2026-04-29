@@ -38,6 +38,11 @@ interface BubbleStackProps {
   petAbsPos: { x: number; y: number };
   /** 任一气泡等待 / 接收 Hermes 输出时，上报给桌宠本体做表情反馈 */
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
+  /**
+   * App 层注册一个回调，拖拽时直接调用来同步移动 popover DOM（绕过 React 渲染）。
+   * fn(dx, dy)：相对于拖拽起点的偏移量；松开时传 (0,0) 归零。
+   */
+  onRegisterPopoverMove?: (fn: (dx: number, dy: number) => void) => void;
 }
 
 const STACK_WIDTH_COLLAPSED = 24; // 收起态：仅小圆点的列宽
@@ -178,6 +183,7 @@ export default function BubbleStack({
   petSize,
   petAbsPos,
   onWaitingOutputChange,
+  onRegisterPopoverMove,
 }: BubbleStackProps) {
   const [hovered, setHovered] = useState(false);
   // 当前打开浮窗的气泡（最多一个）。null = 都没开
@@ -440,6 +446,7 @@ export default function BubbleStack({
                 : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP)),
             }}
             popoverPlacement={activeOnly ? "above" : "side"}
+            onRegisterPopoverMove={onRegisterPopoverMove}
           />
         ))}
       </div>
@@ -469,6 +476,7 @@ interface BubbleProps {
   isDragTarget: boolean;
   droppedFilePaths: string[];
   onDroppedFilePathsChange: (paths: string[]) => void;
+  onRegisterPopoverMove?: (fn: (dx: number, dy: number) => void) => void;
 }
 
 function Bubble({
@@ -490,6 +498,7 @@ function Bubble({
   isDragTarget,
   droppedFilePaths,
   onDroppedFilePathsChange,
+  onRegisterPopoverMove,
 }: BubbleProps) {
   const [input, setInput] = useState("");
   const [sessions, setSessions] = useState<BubbleSession[]>(() => [
@@ -503,6 +512,22 @@ function Bubble({
   const inputRef = useRef<HTMLInputElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverBodyRef = useRef<HTMLDivElement>(null);
+  // 拖拽期间 popover 的额外偏移（相对于起点的 delta），绕过 React 渲染直接操作 DOM
+  const popoverDragDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+
+  // 把同步移动函数注册给 App，拖拽时直接调用
+  useEffect(() => {
+    onRegisterPopoverMove?.((dx, dy) => {
+      popoverDragDeltaRef.current = { dx, dy };
+      if (popoverRef.current) {
+        if (dx === 0 && dy === 0) {
+          popoverRef.current.style.transform = "";
+        } else {
+          popoverRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
+        }
+      }
+    });
+  }, [onRegisterPopoverMove]);
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const runningSessionIdRef = useRef<string | null>(null);
   const lastDropRequestIdRef = useRef<string | null>(null);
