@@ -14,6 +14,8 @@
 //     → poller 跑起来了但前端 listen 不响应，调试条死掉
 // 这条 spike 暂搁置，等核心交互（流 B/C）跑通后再单独啃。
 
+mod runner;
+
 use tauri::Manager;
 
 /// 切换 pet 窗口的鼠标穿透状态。前端 hit-test 后调：
@@ -69,7 +71,12 @@ fn tame_macos_window(_win: &tauri::WebviewWindow) {}
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![set_pet_passthrough])
+        .invoke_handler(tauri::generate_handler![
+            set_pet_passthrough,
+            runner::hermes_discover,
+            runner::hermes_start_chat,
+            runner::hermes_cancel
+        ])
         .setup(|app| {
             if let Some(win) = app.get_webview_window("pet") {
                 if let Ok(Some(monitor)) = win.primary_monitor() {
