@@ -37,6 +37,8 @@ interface BubbleStackProps {
   petSize: number;
   /** 任一气泡等待 / 接收 Hermes 输出时，上报给桌宠本体做表情反馈 */
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
+  /** 对话记录大框打开时，让桌宠上移避让 */
+  onConversationLargeChange?: (large: boolean) => void;
 }
 
 const STACK_WIDTH_COLLAPSED = 24; // 收起态：仅小圆点的列宽
@@ -47,6 +49,9 @@ const BUBBLE_GAP = 8; // 气泡之间垂直间距
 const POPOVER_GAP = 8;
 const POPOVER_WIDTH = STACK_WIDTH_EXPANDED; // 下方浮窗宽度跟上方选中输入保持一致
 const POPOVER_MAX_HEIGHT = 320;
+const POPOVER_LARGE_WIDTH = 640;
+const POPOVER_LARGE_MAX_HEIGHT = 560;
+const POPOVER_VIEWPORT_MARGIN = 16;
 const FILE_CHIP_STRIP_HEIGHT = 36;
 
 interface BubbleConfig {
@@ -94,20 +99,20 @@ type TauriDragDropPayload =
 const BUBBLES: BubbleConfig[] = [
   {
     kind: "research",
-    label: "research",
-    placeholder: "研究主题…",
+    label: "Research",
+    placeholder: "Research topic...",
     multiTurn: false,
   },
   {
     kind: "dialog",
-    label: "对话",
-    placeholder: "说点什么…",
+    label: "Chat",
+    placeholder: "Say something...",
     multiTurn: true,
   },
   {
     kind: "cowork",
-    label: "cowork",
-    placeholder: "交个任务…",
+    label: "Cowork",
+    placeholder: "Give me a task...",
     multiTurn: false,
   },
 ];
@@ -153,10 +158,17 @@ function fileNameFromPath(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function clampPopoverLeft(value: number, width: number): number {
+  const min = POPOVER_VIEWPORT_MARGIN;
+  const max = Math.max(min, window.innerWidth - width - POPOVER_VIEWPORT_MARGIN);
+  return Math.min(Math.max(value, min), max);
+}
+
 export default function BubbleStack({
   petPos,
   petSize,
   onWaitingOutputChange,
+  onConversationLargeChange,
 }: BubbleStackProps) {
   const [hovered, setHovered] = useState(false);
   // 当前打开浮窗的气泡（最多一个）。null = 都没开
@@ -188,7 +200,13 @@ export default function BubbleStack({
     ? BUBBLE_HEIGHT + activeFileChipHeight
     : fullStackHeight;
   const stackX = petPos.x - STACK_GAP - stackWidth;
-  const stackY = petPos.y + (petSize - fullStackHeight) / 2;
+  const baseStackY = petPos.y + (petSize - fullStackHeight) / 2;
+  const activeInputOffset = (BUBBLES.length - 1) * (BUBBLE_HEIGHT + BUBBLE_GAP);
+  const stackY = baseStackY;
+  const hitRegionY = activeOnly ? stackY + activeInputOffset : stackY;
+  const visualStackHeight = activeOnly
+    ? activeInputOffset + BUBBLE_HEIGHT + activeFileChipHeight
+    : fullStackHeight;
 
   useEffect(() => {
     dragTargetKindRef.current = dragTargetKind;
@@ -205,7 +223,10 @@ export default function BubbleStack({
         x >= collapsedStackX && x <= collapsedStackX + STACK_WIDTH_COLLAPSED;
 
       for (const [idx, cfg] of BUBBLES.entries()) {
-        const top = stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
+        const top =
+          activeOnly
+            ? stackY + activeInputOffset
+            : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
         const insideY = y >= top && y <= top + BUBBLE_HEIGHT;
         if (insideY && (insideExpandedStackX || insideCollapsedStackX)) {
           return cfg.kind;
@@ -219,7 +240,7 @@ export default function BubbleStack({
         y <= petPos.y + petSize;
       return insidePet ? "dialog" : null;
     },
-    [petPos.x, petPos.y, petSize, stackY],
+    [activeInputOffset, activeOnly, petPos.x, petPos.y, petSize, stackY],
   );
 
   useEffect(() => {
@@ -282,12 +303,12 @@ export default function BubbleStack({
   useEffect(() => {
     updateHitRegion("bubble-stack", {
       x: stackX,
-      y: stackY,
+      y: hitRegionY,
       width: stackWidth,
       height: stackHeight,
     });
     return () => updateHitRegion("bubble-stack", null);
-  }, [stackX, stackY, stackWidth, stackHeight]);
+  }, [hitRegionY, stackX, stackWidth, stackHeight]);
 
   return (
     <>
@@ -297,7 +318,7 @@ export default function BubbleStack({
           left: stackX,
           top: stackY,
           width: stackWidth,
-          height: stackHeight,
+          height: visualStackHeight,
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -310,7 +331,7 @@ export default function BubbleStack({
             visible={!activeOnly || activeKind === cfg.kind}
             popoverOpen={openPopover === cfg.kind}
             yOffset={
-              activeOnly ? 0 : idx * (BUBBLE_HEIGHT + BUBBLE_GAP)
+              activeOnly ? activeInputOffset : idx * (BUBBLE_HEIGHT + BUBBLE_GAP)
             }
             onPopoverToggle={(open) => {
               setOpenPopover(open ? cfg.kind : null);
@@ -329,6 +350,7 @@ export default function BubbleStack({
               });
             }}
             onWaitingOutputChange={onWaitingOutputChange}
+            onConversationLargeChange={onConversationLargeChange}
             dropRequest={dropRequest}
             isDragTarget={dragTargetKind === cfg.kind}
             droppedFilePaths={droppedPathsByBubble[cfg.kind]}
@@ -342,14 +364,10 @@ export default function BubbleStack({
             popoverAnchor={{
               left: activeOnly ? stackX : stackX + stackWidth + 8,
               top: activeOnly
-                ? stackY +
-                  BUBBLE_HEIGHT +
-                  POPOVER_GAP +
-                  (droppedPathsByBubble[cfg.kind].length > 0
-                    ? FILE_CHIP_STRIP_HEIGHT
-                    : 0)
+                ? stackY + activeInputOffset
                 : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP),
             }}
+            popoverPlacement={activeOnly ? "above" : "side"}
           />
         ))}
       </div>
@@ -367,9 +385,11 @@ interface BubbleProps {
   popoverOpen: boolean;
   yOffset: number;
   popoverAnchor: { left: number; top: number };
+  popoverPlacement: "above" | "side";
   onPopoverToggle: (open: boolean) => void;
   onFocusChange: (focused: boolean) => void;
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
+  onConversationLargeChange?: (large: boolean) => void;
   dropRequest: DropRequest | null;
   isDragTarget: boolean;
   droppedFilePaths: string[];
@@ -383,9 +403,11 @@ function Bubble({
   popoverOpen,
   yOffset,
   popoverAnchor,
+  popoverPlacement,
   onPopoverToggle,
   onFocusChange,
   onWaitingOutputChange,
+  onConversationLargeChange,
   dropRequest,
   isDragTarget,
   droppedFilePaths,
@@ -397,6 +419,7 @@ function Bubble({
   ]);
   const [activeSessionId, setActiveSessionId] = useState(() => sessions[0].id);
   const [generationCollapsed, setGenerationCollapsed] = useState(false);
+  const [popoverLarge, setPopoverLarge] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverBodyRef = useRef<HTMLDivElement>(null);
@@ -561,6 +584,21 @@ function Bubble({
     onPopoverToggle(true);
   }
 
+  const popoverSize = popoverLarge
+    ? { width: POPOVER_LARGE_WIDTH, maxHeight: POPOVER_LARGE_MAX_HEIGHT }
+    : { width: POPOVER_WIDTH, maxHeight: POPOVER_MAX_HEIGHT };
+  const popoverPosition = {
+    left: popoverLarge
+      ? clampPopoverLeft(popoverAnchor.left, popoverSize.width)
+      : popoverAnchor.left,
+    top: Math.max(
+      POPOVER_VIEWPORT_MARGIN,
+      popoverPlacement === "above"
+        ? popoverAnchor.top - POPOVER_GAP - popoverSize.maxHeight
+        : popoverAnchor.top,
+    ),
+  };
+
   // 浮窗 hit region
   useEffect(() => {
     if (!popoverOpen) {
@@ -569,13 +607,22 @@ function Bubble({
     }
     // 展开 icon 收起态只保留一个很小的 hit region。
     updateHitRegion(`popover-${cfg.kind}`, {
-      x: popoverAnchor.left,
-      y: popoverAnchor.top,
-      width: POPOVER_WIDTH,
-      height: generationCollapsed ? 32 : POPOVER_MAX_HEIGHT,
+      x: popoverPosition.left,
+      y: popoverPosition.top,
+      width: popoverSize.width,
+      height: generationCollapsed ? 32 : popoverSize.maxHeight,
     });
     return () => updateHitRegion(`popover-${cfg.kind}`, null);
-  }, [popoverOpen, popoverAnchor.left, popoverAnchor.top, cfg.kind, generationCollapsed]);
+  }, [
+    popoverOpen,
+    popoverPosition.left,
+    popoverPosition.top,
+    popoverSize.width,
+    popoverSize.maxHeight,
+    cfg.kind,
+    generationCollapsed,
+    popoverPlacement,
+  ]);
 
   // 浮窗打开后自动聚焦输入框（dialog 体验）
   useEffect(() => {
@@ -646,6 +693,17 @@ function Bubble({
     onWaitingOutputChange?.(cfg.kind, isWaitingForOutput);
     return () => onWaitingOutputChange?.(cfg.kind, false);
   }, [cfg.kind, isWaitingForOutput, onWaitingOutputChange]);
+
+  useEffect(() => {
+    const isLargeOpen = popoverOpen && popoverLarge && !generationCollapsed;
+    onConversationLargeChange?.(isLargeOpen);
+    return () => onConversationLargeChange?.(false);
+  }, [
+    generationCollapsed,
+    onConversationLargeChange,
+    popoverLarge,
+    popoverOpen,
+  ]);
 
   useEffect(() => {
     if (!popoverOpen || !cfg.multiTurn) return;
@@ -729,14 +787,14 @@ function Bubble({
                     ? handleExpandGeneration
                     : handleCollapseGeneration
                 }
-                title={generationCollapsed ? "展开生成过程" : "收起生成过程"}
+                title={generationCollapsed ? "Show generation" : "Hide generation"}
               >
-                {generationCollapsed ? "▴" : "▾"}
+                {generationCollapsed ? "▾" : "▴"}
               </button>
               <button
                 className="bubble-pill-cancel"
                 onClick={() => task.cancel()}
-                title="取消"
+                title="Cancel"
               >
                 ×
               </button>
@@ -776,30 +834,39 @@ function Bubble({
       {visible && popoverOpen && !generationCollapsed && (
         <div
           ref={popoverRef}
-          className="bubble-popover"
+          className={`bubble-popover${popoverLarge ? " is-large" : ""}`}
           style={{
-            left: popoverAnchor.left,
-            top: popoverAnchor.top,
-            width: POPOVER_WIDTH,
-            maxHeight: POPOVER_MAX_HEIGHT,
+            left: popoverPosition.left,
+            top: popoverPosition.top,
+            width: popoverSize.width,
+            height: popoverPlacement === "above" ? popoverSize.maxHeight : undefined,
+            maxHeight: popoverSize.maxHeight,
           }}
         >
           <div className="bubble-popover-header">
             <span className="bubble-popover-title">{cfg.label}</span>
             <span className="bubble-popover-status">
-              {activeSession?.status === "idle" && "等待输入"}
-              {activeSession?.status === "starting" && "启动中…"}
-              {activeSession?.status === "streaming" && "运行中…"}
-              {activeSession?.status === "done" && "完成"}
-              {activeSession?.status === "error" && "出错"}
-              {activeSession?.status === "cancelled" && "已取消"}
+              {activeSession?.status === "idle" && "Waiting for input"}
+              {activeSession?.status === "starting" && "Starting..."}
+              {activeSession?.status === "streaming" && "Running..."}
+              {activeSession?.status === "done" && "Done"}
+              {activeSession?.status === "error" && "Error"}
+              {activeSession?.status === "cancelled" && "Cancelled"}
             </span>
+            <button
+              className="bubble-popover-expand"
+              onClick={() => setPopoverLarge((value) => !value)}
+              title={popoverLarge ? "Shrink panel" : "Expand panel"}
+              aria-label={popoverLarge ? "Shrink panel" : "Expand panel"}
+            >
+              {popoverLarge ? "□" : "▣"}
+            </button>
             <button
               className="bubble-popover-close"
               onClick={() => {
                 onPopoverToggle(false);
               }}
-              title="关闭"
+              title="Close"
             >
               ×
             </button>
@@ -831,7 +898,7 @@ function Bubble({
                       handleDeleteSession(session.id);
                     }
                   }}
-                  aria-label={`删除 ${session.title}`}
+                  aria-label={`Delete ${session.title}`}
                   aria-disabled={isRunning}
                 >
                   ×
@@ -842,7 +909,7 @@ function Bubble({
               className="bubble-session-new"
               onClick={handleNewSession}
               disabled={isRunning}
-              title="新建 session"
+              title="New session"
             >
               +
             </button>
@@ -863,8 +930,8 @@ function Bubble({
                         {message.content || (
                           <span className="conversation-message-pending">
                             {isRunning && runningSessionIdRef.current === activeSessionId
-                              ? "Hermes 正在想…"
-                              : "没有收到回复。"}
+                              ? "Hermes is thinking..."
+                              : "No response received."}
                           </span>
                         )}
                       </div>
@@ -873,14 +940,14 @@ function Bubble({
                 </div>
               ) : (
                 <span className="bubble-popover-empty">
-                  在上方输入框里发条消息开始。
+                  Send a message above to get started.
                 </span>
               )
             ) : activeSession?.output || (
               <span className="bubble-popover-empty">
                 {activeSession?.status === "idle"
-                  ? "在上方输入框里发条消息开始。"
-                  : "等待输出…"}
+                  ? "Send a message above to get started."
+                  : "Waiting for output..."}
               </span>
             )}
             {activeSession?.errorMessage && (

@@ -15,6 +15,7 @@ import "./PetCircle.css";
 const SIZE = 100;
 const RADIUS = SIZE / 2;
 const SCALE = SIZE / 200;
+const LIFT_OFFSET = 120;
 
 function s(value: number): number {
   return value * SCALE;
@@ -23,6 +24,8 @@ function s(value: number): number {
 interface PetCircleProps {
   /** 等待 / 接收 Hermes 输出时显示腮红 */
   blushing?: boolean;
+  /** 对话大框展开时上移避让 */
+  lifted?: boolean;
   /** 把当前位置和尺寸暴露给上层（BubbleStack 跟随定位用） */
   onPosChange?: (pos: { x: number; y: number; size: number }) => void;
 }
@@ -31,25 +34,33 @@ export const PET_SIZE = SIZE;
 
 export default function PetCircle({
   blushing = false,
+  lifted = false,
   onPosChange,
 }: PetCircleProps) {
   const [pos, setPos] = useState(() => ({
     x: Math.max(0, window.innerWidth / 2 - SIZE / 2),
     y: Math.max(0, window.innerHeight / 3 - SIZE / 2),
   }));
+  const [dragging, setDragging] = useState(false);
   const [hovered, setHovered] = useState(false);
 
   // === spike 调试 state ===
   const [moves, setMoves] = useState(0);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
-  const posRef = useRef(pos);
-  posRef.current = pos;
+  const liftedRef = useRef(lifted);
+  liftedRef.current = lifted;
+  const visualPos = {
+    x: pos.x,
+    y: lifted ? Math.max(0, pos.y - LIFT_OFFSET) : pos.y,
+  };
+  const visualPosRef = useRef(visualPos);
+  visualPosRef.current = visualPos;
 
   useEffect(() => {
     updateHitRegion("pet-circle", {
-      x: pos.x,
-      y: pos.y,
+      x: visualPos.x,
+      y: visualPos.y,
       width: SIZE,
       height: SIZE,
     });
@@ -57,15 +68,15 @@ export default function PetCircle({
     onPosChange?.({ x: pos.x, y: pos.y, size: SIZE });
 
     return () => updateHitRegion("pet-circle", null);
-  }, [pos.x, pos.y, onPosChange]);
+  }, [pos.x, pos.y, visualPos.x, visualPos.y, onPosChange]);
 
   // 拖动：dragRef 记录鼠标按下时鼠标点相对圆左上的偏移
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
 
   useEffect(() => {
     function isInsideCircle(x: number, y: number) {
-      const cx = posRef.current.x + RADIUS;
-      const cy = posRef.current.y + RADIUS;
+      const cx = visualPosRef.current.x + RADIUS;
+      const cy = visualPosRef.current.y + RADIUS;
       const dx = x - cx;
       const dy = y - cy;
       return dx * dx + dy * dy <= RADIUS * RADIUS;
@@ -78,9 +89,10 @@ export default function PetCircle({
       setMouse({ x: Math.round(x), y: Math.round(y) });
 
       if (dragRef.current) {
+        const lift = liftedRef.current ? LIFT_OFFSET : 0;
         setPos({
           x: x - dragRef.current.dx,
-          y: y - dragRef.current.dy,
+          y: y - dragRef.current.dy + lift,
         });
         return;
       }
@@ -92,12 +104,14 @@ export default function PetCircle({
     function onDown(e: MouseEvent) {
       if (!isInsideCircle(e.clientX, e.clientY)) return;
       dragRef.current = {
-        dx: e.clientX - posRef.current.x,
-        dy: e.clientY - posRef.current.y,
+        dx: e.clientX - visualPosRef.current.x,
+        dy: e.clientY - visualPosRef.current.y,
       };
+      setDragging(true);
     }
     function onUp() {
       dragRef.current = null;
+      setDragging(false);
     }
 
     window.addEventListener("mousemove", onMove);
@@ -114,11 +128,11 @@ export default function PetCircle({
   return (
     <>
       <div
-        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}`}
+        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}${lifted ? " is-lifted" : ""}${dragging ? " is-dragging" : ""}`}
         style={{
           width: SIZE,
           height: SIZE,
-          transform: `translate(${pos.x}px, ${pos.y}px)`,
+          transform: `translate(${visualPos.x}px, ${visualPos.y}px)`,
         }}
       >
         <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
@@ -161,7 +175,7 @@ export default function PetCircle({
         </svg>
       </div>
       <div className="pet-debug">
-        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(pos.x)},{Math.round(pos.y)}) hov={String(hovered)} blush={String(blushing)}
+        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(visualPos.x)},{Math.round(visualPos.y)}) hov={String(hovered)} blush={String(blushing)}
       </div>
     </>
   );

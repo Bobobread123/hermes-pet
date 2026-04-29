@@ -59,7 +59,7 @@
   font-family:
     -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
   font-size: 13px;
-  transition: top 180ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  transition: top 260ms ease, border-color 260ms ease, box-shadow 260ms ease;
 }
 .bubble-pill.is-running {
   border-color: #e94b4b;
@@ -207,6 +207,15 @@
   font-size: 13px;
   color: #2b2b2b;
   z-index: 10;
+  transition:
+    width 260ms ease,
+    max-height 260ms ease,
+    left 260ms ease,
+    top 260ms ease;
+}
+
+.bubble-popover.is-large {
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.16);
 }
 
 .bubble-popover-header {
@@ -228,6 +237,7 @@
   color: #8a857d;
 }
 
+.bubble-popover-expand,
 .bubble-popover-close {
   flex: 0 0 auto;
   width: 22px;
@@ -241,6 +251,12 @@
   color: #8a857d;
   padding: 0;
 }
+
+.bubble-popover-expand {
+  position: relative;
+}
+
+.bubble-popover-expand:hover,
 .bubble-popover-close:hover {
   background: #f0e6d2;
   color: #2b2b2b;

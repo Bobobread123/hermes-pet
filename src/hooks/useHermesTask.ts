@@ -149,7 +149,7 @@ export function useHermesTask(): UseHermesTaskApi {
         setState((s) => ({
           ...s,
           status: isOk ? "done" : "error",
-          errorMessage: isOk ? null : `进程退出码 ${code}`,
+          errorMessage: isOk ? null : `Process exited with code ${code}`,
         }));
         currentTaskIdRef.current = null;
       });
@@ -238,7 +238,7 @@ export function useHermesTask(): UseHermesTaskApi {
       setState((s) => ({
         ...s,
         status: "error",
-        errorMessage: `启动失败：${msg}`,
+        errorMessage: `Failed to start: ${msg}`,
       }));
     }
   }, []);

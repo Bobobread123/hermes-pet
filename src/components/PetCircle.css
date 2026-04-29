@@ -12,11 +12,21 @@
      如果后续需要严格"圆形 hit"，可以改用 clip-path: circle(50%); */
   user-select: none;
   -webkit-user-select: none;
-  transition: filter 200ms ease;
+  transition:
+    filter 260ms ease,
+    transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .pet-circle:active {
   cursor: grabbing;
+}
+
+.pet-circle.is-dragging {
+  transition: filter 260ms ease;
+}
+
+.pet-circle.is-lifted {
+  filter: drop-shadow(0 8px 18px rgba(93, 168, 232, 0.24));
 }
 
 .pet-circle.is-hovered {

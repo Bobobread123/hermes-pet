@@ -29,6 +29,7 @@ function App() {
     dialog: false,
     cowork: false,
   });
+  const [conversationLarge, setConversationLarge] = useState(false);
 
   const handlePosChange = useCallback(
     (next: { x: number; y: number; size: number }) => {
@@ -56,12 +57,14 @@ function App() {
     <div className="pet-root">
       <PetCircle
         blushing={isWaitingForOutput}
+        lifted={conversationLarge}
         onPosChange={handlePosChange}
       />
       <BubbleStack
         petPos={petPos}
         petSize={PET_SIZE}
         onWaitingOutputChange={handleWaitingOutputChange}
+        onConversationLargeChange={setConversationLarge}
       />
     </div>
   );

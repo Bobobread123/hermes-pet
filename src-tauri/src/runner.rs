@@ -182,7 +182,7 @@ pub async fn hermes_start_chat(
     args: StartChatArgs,
 ) -> Result<StartChatResult, String> {
     let bin = discover_hermes_path()
-        .ok_or_else(|| "未找到 hermes 二进制（请先安装 Hermes Agent）".to_string())?;
+        .ok_or_else(|| "Hermes binary not found. Please install Hermes Agent first.".to_string())?;
 
     let task_id = args
         .task_id
@@ -255,18 +255,18 @@ pub async fn hermes_start_chat(
         }
         Err(e) => {
             eprintln!("[hermes-runner] task={} spawn FAILED: {e}", task_id);
-            return Err(format!("spawn hermes 失败: {e}"));
+            return Err(format!("Failed to spawn hermes: {e}"));
         }
     };
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "child stdout 取不到".to_string())?;
+        .ok_or_else(|| "Could not capture child stdout".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "child stderr 取不到".to_string())?;
+        .ok_or_else(|| "Could not capture child stderr".to_string())?;
 
     // 注册到 RUNNING（取走 child 之前先放 reader 拿走 pipe；child 本体留着 wait）
     {
@@ -350,7 +350,7 @@ pub async fn hermes_start_chat(
                         EV_ERROR,
                         ErrorPayload {
                             task_id: tid_stdout.clone(),
-                            message: format!("读 stdout 出错: {e}"),
+                            message: format!("Failed to read stdout: {e}"),
                         },
                     );
                     break;
@@ -523,7 +523,7 @@ pub async fn hermes_cancel(task_id: String) -> Result<(), String> {
         // tokio Child::start_kill 是非阻塞 SIGKILL
         if let Err(e) = child.start_kill() {
             eprintln!("[hermes-runner] cancel kill FAILED: {e}");
-            return Err(format!("kill 失败: {e}"));
+            return Err(format!("Failed to kill process: {e}"));
         }
         eprintln!(
             "[hermes-runner] cancel kill signal sent for task={}",

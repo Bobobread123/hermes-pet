@@ -1,7 +1,7 @@
 [package]
 name = "hermes-pet"
 version = "0.1.0"
-description = "Hermes 桌宠 - 戴翅膀头盔的小机器人，本地 Hermes Agent 的桌面伙计"
+description = "Hermes Pet - a wing-helmeted desktop robot companion for your local Hermes Agent"
 authors = ["Wayne <Trip1ewhy@github>"]
 edition = "2021"
 
