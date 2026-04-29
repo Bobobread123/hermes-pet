@@ -27,8 +27,8 @@
 
 **上下文完全交给 Hermes Agent 管，桌宠端只存 `session_id`。**
 
-- 首次提交：`hermes chat -Q --source tool --accept-hooks -q "<system_prompt>\n\n<user_input>"`，从输出中拿到 `session_id` 存到内存
-- 后续提交：`hermes chat -Q --source tool --accept-hooks -r <session_id> -q "<user_input>"`（不再带 system prompt，Hermes 自己记得这个 session 的上下文）
+- 首次提交：`hermes chat -Q --accept-hooks -q "<system_prompt>\n\n<user_input>"`，从 stdout/stderr 中拿到 `session_id` 存到内存
+- 后续提交：`hermes chat -Q --accept-hooks -r <session_id> -q "<user_input>"`（不再带 system prompt，Hermes 自己记得这个 session 的上下文）
 - 切到普通模式或重启桌宠 → V1 阶段**丢掉内存里的 session_id**（用户想找回可以走 `hermes sessions browse`，V2 再加恢复入口）
 - 编辑过的临时 system prompt 因为只在首次注入，**会话内自动保持有效**；新对话（用户点 ×）回归默认值
 

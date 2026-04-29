@@ -32,7 +32,7 @@
   - `--ignore-rules`（默认关）—— 让桌宠跑出来的会话不读 AGENTS.md / SOUL.md
   - `--ignore-user-config`（默认关）—— 不读 `~/.hermes/config.yaml`
   - 预加载 skills 列表（逗号分隔，传给 `-s`）
-- "测试连接" 按钮 → 跑 `hermes chat -Q --source tool --accept-hooks -q "ping, reply with 'pong' only"`，回显是否成功
+- "测试连接" 按钮 → 跑 `hermes chat -Q --accept-hooks -q "ping, reply with 'pong' only"`，回显是否成功
 
 ### 3. System Prompt 默认值
 

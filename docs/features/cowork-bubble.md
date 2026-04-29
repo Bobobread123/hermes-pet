@@ -33,13 +33,14 @@ V1 不做复杂模板，给一个简单的任务执行型 prompt：
 同 research —— 单轮 spawn，无上下文：
 
 ```bash
-hermes chat -Q --source tool --accept-hooks \
+hermes chat -Q --accept-hooks \
   -q "<cowork_system_prompt>\n\n<user_input>"
 ```
 
 cowork 任务通常会触发 Hermes 调工具（写文件、跑命令等），所以：
 - **不开 `--yolo`**：让 Hermes 自己的危险命令策略生效（用户在 `~/.hermes/config.yaml` 里配的）
 - `--accept-hooks` 还是要开，因为桌宠是无 TTY 环境
+- `--source tool` 因 2026-04-29 实测性能异常，V1 暂不带
 
 详见 [../tech.md](../tech.md) §3.1 / §3.2。
 
