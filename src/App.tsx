@@ -13,7 +13,7 @@
 //   - 拖入文件接入（流 C）
 
 import { useCallback, useMemo, useState } from "react";
-import PetCircle, { PET_SIZE } from "./components/PetCircle";
+import PetCircle, { PET_SIZE, PET_SPRITE_W, PET_WING_LEFT } from "./components/PetCircle";
 import BubbleStack from "./components/BubbleStack";
 import type { BubbleKind } from "./lib/prompts";
 import "./App.css";
@@ -52,17 +52,34 @@ function App() {
     [waitingByBubble],
   );
 
+  // BubbleStack 挂在跟桌宠同步移动的 wrapper 里
+  // wrapper 原点 = sprite 实际左上角（petPos.x 是 hit region 左边 = sprite_left + BODY_LEFT）
+  // 这样 BubbleStack 的 stackX 从翅膀外沿起算，不会遮挡翅膀
+  const petWrapperStyle = useMemo(
+    () => ({
+      position: "fixed" as const,
+      left: petPos.x - PET_WING_LEFT,   // sprite 左上角（翅膀左边缘）
+      top: petPos.y,
+      width: PET_SPRITE_W,              // sprite 完整宽度（含翅膀）
+      height: PET_SIZE,
+      pointerEvents: "none" as const,
+    }),
+    [petPos.x, petPos.y],
+  );
+
   return (
     <div className="pet-root">
       <PetCircle
         blushing={isWaitingForOutput}
         onPosChange={handlePosChange}
       />
-      <BubbleStack
-        petPos={petPos}
-        petSize={PET_SIZE}
-        onWaitingOutputChange={handleWaitingOutputChange}
-      />
+      <div style={petWrapperStyle}>
+        <BubbleStack
+          petAbsPos={petPos}
+          petSize={PET_SIZE}
+          onWaitingOutputChange={handleWaitingOutputChange}
+        />
+      </div>
     </div>
   );
 }

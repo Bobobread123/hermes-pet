@@ -1,48 +1,201 @@
-/* 流 A 占位 pet 样式 */
+/* PetCircle — 像素角色 + 动画样式 */
 
+/* ── 容器 ── */
 .pet-circle {
   position: fixed;
   top: 0;
   left: 0;
-  /* 用 transform 定位，避免 React 重渲染影响拖动手感 */
   will-change: transform;
   cursor: grab;
-  /* 圆形 hit-area 由 SVG 内部决定；外接矩形也算可点区域，
-     但因为 webview 默认是穿透模式，矩形空白区不会真的吃掉桌面点击。
-     如果后续需要严格"圆形 hit"，可以改用 clip-path: circle(50%); */
   user-select: none;
   -webkit-user-select: none;
-  transition:
-    filter 260ms ease,
-    transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+.pet-circle:active { cursor: grabbing; }
 
-.pet-circle:active {
-  cursor: grabbing;
-}
-
-.pet-circle.is-dragging {
-  transition: filter 260ms ease;
-}
-
-.pet-circle.is-hovered {
-  filter: drop-shadow(0 4px 12px rgba(212, 184, 150, 0.6));
-}
-
-.pet-circle.is-blushing {
-  filter: drop-shadow(0 4px 14px rgba(245, 160, 176, 0.45));
-}
-
-.pet-circle svg {
+/* ── SVG sprite ── */
+.pet-sprite {
   display: block;
-  pointer-events: auto;
+  pointer-events: none;
+  overflow: visible;
 }
 
-.pet-cheek {
-  transition: opacity 180ms ease;
+/* ─────────────────────────────────────────
+   1. 微呼吸（始终开，除 sleeping 变慢）
+───────────────────────────────────────── */
+@keyframes breathing {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-2px); }
+}
+@keyframes breathingSlow {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-1px); }
 }
 
-/* spike 调试条 - 验收完会删除 */
+.pet-sprite {
+  animation: breathing 2.5s ease-in-out infinite;
+}
+.anim-sleeping .pet-sprite {
+  animation: breathingSlow 4s ease-in-out infinite;
+}
+/* 拖动中暂停呼吸 */
+.is-dragging .pet-sprite {
+  animation: none;
+}
+
+/* ─────────────────────────────────────────
+   2. Idle：转圈（spin）
+───────────────────────────────────────── */
+@keyframes idleSpin {
+  0%   { transform: translateY(0) rotate(0deg); }
+  30%  { transform: translateY(-3px) rotate(180deg); }
+  70%  { transform: translateY(-3px) rotate(300deg); }
+  100% { transform: translateY(0) rotate(360deg); }
+}
+.anim-idle-spin .pet-sprite {
+  animation: idleSpin 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  transform-origin: 81px 68px; /* 身体中心：(103+60/2)*0.5≈81, (80+90/2)*0.5≈68 */
+}
+
+/* ─────────────────────────────────────────
+   3. Idle：扭头（shake = scaleX 翻转感）
+───────────────────────────────────────── */
+@keyframes idleShake {
+  0%   { transform: translateY(0) scaleX(1); }
+  25%  { transform: translateY(0) scaleX(-1); }
+  50%  { transform: translateY(0) scaleX(-1); }
+  75%  { transform: translateY(0) scaleX(1); }
+  100% { transform: translateY(0) scaleX(1); }
+}
+.anim-idle-shake .pet-sprite {
+  animation: idleShake 0.6s ease-in-out forwards;
+  transform-origin: 81px 68px;
+}
+
+/* ─────────────────────────────────────────
+   4. 摸头：眯眼 + 翅膀抖动
+───────────────────────────────────────── */
+/* 眼睛 rect（SVG 内部元素，用 transform-box + transform-origin 压扁） */
+.pet-sprite .eye {
+  transition: transform 120ms ease;
+  transform-box: fill-box;
+  transform-origin: center center;
+}
+@keyframes eyeSquint {
+  0%, 100% { transform: scaleY(1); }
+  30%, 70% { transform: scaleY(0.2); }
+}
+.anim-head-pat .pet-sprite .eye {
+  animation: eyeSquint 500ms ease forwards;
+}
+
+/* 翅膀抖 */
+@keyframes wingShake {
+  0%   { transform: translateX(0); }
+  20%  { transform: translateX(-3px); }
+  40%  { transform: translateX(3px); }
+  60%  { transform: translateX(-2px); }
+  80%  { transform: translateX(2px); }
+  100% { transform: translateX(0); }
+}
+.pet-sprite .wing {
+  transform-box: fill-box;
+  transform-origin: center center;
+}
+.anim-head-pat .pet-sprite .wing {
+  animation: wingShake 500ms ease forwards;
+}
+
+/* ─────────────────────────────────────────
+   5. 睡眠：眼睛闭合
+───────────────────────────────────────── */
+@keyframes eyeClose {
+  0%   { transform: scaleY(1); }
+  100% { transform: scaleY(0.15); }
+}
+.anim-sleeping .pet-sprite .eye {
+  animation: eyeClose 1.2s ease forwards;
+}
+
+/* ─────────────────────────────────────────
+   6. 唤醒：眼睛恢复 + 眨眼
+───────────────────────────────────────── */
+@keyframes eyeWake {
+  0%   { transform: scaleY(0.15); }
+  50%  { transform: scaleY(1); }
+  65%  { transform: scaleY(0.3); }
+  80%  { transform: scaleY(1); }
+  100% { transform: scaleY(1); }
+}
+.anim-waking .pet-sprite .eye {
+  animation: eyeWake 400ms ease forwards;
+}
+
+/* ─────────────────────────────────────────
+   7. hover 光晕
+───────────────────────────────────────── */
+.pet-circle.is-hovered .pet-sprite {
+  filter: drop-shadow(0 0 6px rgba(249, 218, 119, 0.65))
+          drop-shadow(0 3px 10px rgba(249, 218, 119, 0.35));
+}
+.pet-circle.is-blushing .pet-sprite {
+  filter: drop-shadow(0 0 8px rgba(245, 160, 176, 0.55))
+          drop-shadow(0 4px 12px rgba(245, 160, 176, 0.3));
+}
+
+.pet-hover-glow {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(249, 218, 119, 0.15) 0%,
+    rgba(249, 218, 119, 0.05) 60%,
+    transparent 100%
+  );
+  pointer-events: none;
+  animation: petGlowPulse 1.8s ease-in-out infinite;
+}
+@keyframes petGlowPulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1.0; }
+}
+
+/* ─────────────────────────────────────────
+   8. 睡眠 zzz
+───────────────────────────────────────── */
+.pet-zzz {
+  position: absolute;
+  /* 头顶右上方：身体右侧 + 略高于顶部 */
+  left: 105px;  /* BODY_LEFT + BODY_WIDTH * 0.9 ≈ 51 + 55*0.9 */
+  top: 20px;    /* BODY_TOP - a bit */
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  gap: 1px;
+  pointer-events: none;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  font-weight: 700;
+  color: #5a5a7a;
+  line-height: 1;
+}
+
+.pet-zzz span {
+  opacity: 0;
+  animation: zzzFloat 2.4s ease-in-out infinite;
+}
+.zzz-1 { font-size: 8px;  animation-delay: 0s; }
+.zzz-2 { font-size: 11px; animation-delay: 0.6s; }
+.zzz-3 { font-size: 14px; animation-delay: 1.2s; }
+
+@keyframes zzzFloat {
+  0%   { opacity: 0;   transform: translateY(0) scale(0.8); }
+  20%  { opacity: 0.9; transform: translateY(-4px) scale(1); }
+  80%  { opacity: 0.6; transform: translateY(-10px) scale(1.1); }
+  100% { opacity: 0;   transform: translateY(-14px) scale(0.9); }
+}
+
+/* ─────────────────────────────────────────
+   调试条（验收后删除）
+───────────────────────────────────────── */
 .pet-debug {
   position: fixed;
   left: 8px;

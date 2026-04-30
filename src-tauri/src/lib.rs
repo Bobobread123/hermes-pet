@@ -173,27 +173,35 @@ pub fn run() {
             set_pet_hit_regions,
             runner::hermes_discover,
             runner::hermes_start_chat,
-            runner::hermes_cancel
+            runner::hermes_cancel,
+            runner::hermes_send_input
         ])
         .setup(move |app| {
             if let Some(win) = app.get_webview_window("pet") {
-                if let Ok(Some(monitor)) = win.primary_monitor() {
-                    let size = monitor.size();
-                    let pos = monitor.position();
-                    let _ = win.set_size(tauri::PhysicalSize::new(size.width, size.height));
-                    let _ = win.set_position(tauri::PhysicalPosition::new(pos.x, pos.y));
-                    eprintln!(
-                        "[hermes-pet] resized to primary monitor: {}x{} @ ({},{})",
-                        size.width, size.height, pos.x, pos.y
-                    );
-                }
-
                 // 启动默认穿透；等前端上报 hit region 后，后端 poller 会按需切回可交互。
                 if let Err(e) = win.set_ignore_cursor_events(true) {
                     eprintln!("[hermes-pet] set_ignore_cursor_events(true) failed: {e}");
                 }
                 tame_macos_window(&win);
-                start_mouse_passthrough_poller(win, hit_state.clone());
+                start_mouse_passthrough_poller(win.clone(), hit_state.clone());
+
+                // 延迟 300ms 再 resize，给 WKWebView 时间建立 CADisplayLink；
+                // 否则出现 "page has no displayID" 导致整个 WebView 不渲染。
+                // 注意：setup 回调不在 tokio runtime，用 std::thread::spawn。
+                let win2 = win.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    if let Ok(Some(monitor)) = win2.primary_monitor() {
+                        let size = monitor.size();
+                        let pos = monitor.position();
+                        let _ = win2.set_size(tauri::PhysicalSize::new(size.width, size.height));
+                        let _ = win2.set_position(tauri::PhysicalPosition::new(pos.x, pos.y));
+                        eprintln!(
+                            "[hermes-pet] resized to primary monitor: {}x{} @ ({},{})",
+                            size.width, size.height, pos.x, pos.y
+                        );
+                    }
+                });
             } else {
                 eprintln!("[hermes-pet] pet window not found at startup!");
             }

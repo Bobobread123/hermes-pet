@@ -1,49 +1,42 @@
-// Hermes Runner —— 流 B 核心：spawn 本地 Hermes Agent CLI 子进程，
-// 把 stdout 实时（按行）转成 Tauri event，前端订阅。
+// Hermes Runner —— spawn 本地 Hermes Agent CLI 子进程（PTY 模式）
 //
-// 设计要点（已在实测中确认，详见 docs/tech.md §10 风险 2/3）：
-//   1. CLI 入口固定：`hermes chat -Q --accept-hooks -q "<text>"`
-//      续接时再加 `-r <session_id>`。
-//      —— 注：原计划带 `--source tool`，2026-04-29 实测发现
-//      `-Q` 与 `--source tool` 组合会让一次 `hi` 耗时从 10s 飙到 44s，
-//      去掉 `--source tool` 后回归正常，故 V1 不带。
-//   2. stdout 是行流式：tokio 的 BufReader::lines 即可。
-//   3. 首条对话首行 `session_id: <id>` 必出；续接调用首行可能是
-//      `↻ Resumed session ...`，第二行才是 `session_id: <id>`。
-//      —— 实测补丁（2026-04-29）：`session_id:` 行实际写到 **stderr**
-//      而非 stdout（hermes 把它当 meta 信息了）。所以两边都要扫。
-//      并且 stderr 必须 **实时按行读**，否则 pipe buffer 一满会
-//      让子进程 write() 阻塞，stdout 那头跟着卡住，表现就是
-//      "10s 的事情拖到 30s+"。这条踩坑代价很大，别再回头。
-//   4. 退出码 0 表示正常；非 0 走 error event。
+// 为什么用 PTY（伪终端）：
+//   Hermes CLI 在无 TTY 环境下检测到非 interactive，会对危险命令
+//   直接自动 deny，不等待用户输入。PTY 让 Hermes 以为自己在真实
+//   终端里运行，从而正常显示审批提示并等待 stdin。
 //
-// 对外 Tauri commands：
-//   - hermes_discover() -> { ok, path } : 探测 hermes 二进制位置
+// 架构要点：
+//   1. portable-pty 是同步 API，读循环跑在 spawn_blocking 线程里。
+//   2. 读循环通过 tokio mpsc channel 把"事件消息"发给异步侧；
+//      异步侧负责 emit_to Tauri 事件（必须在 async 上下文里）。
+//   3. PTY master writer 存入全局 STDIN_MAP，供 hermes_send_input
+//      command 向子进程写入审批选择。
+//   4. PTY 输出含 ANSI escape 序列，emit 前用正则 strip 干净。
+//   5. session_id 行、审批提示行、普通 chunk 行 —— 三类分开处理。
+//   6. 审批上下文缓冲最近 20 行，检测到 "Choice [" 时组装 payload。
+//
+// 对外 Tauri commands（与原版保持同名，前端无需改动）：
+//   - hermes_discover()
 //   - hermes_start_chat({ text, session_id?, system_prompt? }) -> task_id
 //   - hermes_cancel(task_id)
+//   - hermes_send_input(task_id, input)
 //
-// emit 的事件（payload 见各 Payload struct）：
-//   - hermes-chunk        正文增量行
-//   - hermes-session      首次拿到 session_id
-//   - hermes-done         任务完成（含退出码）
-//   - hermes-error        spawn 失败 / 进程异常
-//   —— 注：原本用 `hermes://chunk` 这种 URL 风格，2026-04-29 实测前端
-//      `listen()` 收不到事件（后端 emit 成功，前端死活不触发回调）。
-//      Tauri 2 的 event name 不允许 `//`，必须 kebab-case。
-//
-// 并发：每次提交都 spawn 独立子进程，task_id (uuid v4) 隔离。
-// kill 时通过 task_id 在 RUNNING 表里查 Child handle 调 .kill()。
+// emit 事件（kebab-case，前端 useHermesTask.ts 订阅）：
+//   - hermes-chunk     { task_id, line }
+//   - hermes-session   { task_id, session_id }
+//   - hermes-done      { task_id, exit_code }
+//   - hermes-error     { task_id, message }
+//   - hermes-approval  { task_id, command_preview, risk_description }
 
 use once_cell::sync::Lazy;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 // ====== 事件名 ======
@@ -51,15 +44,23 @@ const EV_CHUNK: &str = "hermes-chunk";
 const EV_SESSION: &str = "hermes-session";
 const EV_DONE: &str = "hermes-done";
 const EV_ERROR: &str = "hermes-error";
+const EV_APPROVAL: &str = "hermes-approval";
 const PET_WINDOW_LABEL: &str = "pet";
 
-// ====== 全局状态：跑着的子进程 task_id -> Child ======
-static RUNNING: Lazy<Arc<Mutex<HashMap<String, Child>>>> =
+// ====== 全局 stdin 写入端：task_id -> PTY master writer ======
+// portable-pty 的 writer 是 Box<dyn Write + Send>，包在 Arc<Mutex<>> 里。
+static STDIN_MAP: Lazy<Arc<Mutex<HashMap<String, Box<dyn Write + Send>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
-// ====== session_id 解析正则：第一组 = id ======
+// ====== session_id 解析正则 ======
 static SESSION_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^session_id:\s*(\S+)\s*$").expect("session_id regex"));
+
+// ====== ANSI escape 脱色正则 ======
+// 覆盖：CSI 序列（颜色/光标）、OSC 序列、单字符控制（\r 等保留换行处理）
+static ANSI_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)").expect("ansi regex")
+});
 
 // ====== payload 类型 ======
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +88,15 @@ pub struct ErrorPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ApprovalPayload {
+    pub task_id: String,
+    /// 要显示给用户的命令预览（通常是缩进行，去掉空格）
+    pub command_preview: String,
+    /// 风险等级描述（含 Security scan / [HIGH] / [MEDIUM] 的行）
+    pub risk_description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DiscoverResult {
     pub ok: bool,
     pub path: Option<String>,
@@ -105,23 +115,27 @@ pub struct StartChatResult {
     pub task_id: String,
 }
 
+// ====== 读循环发给异步侧的内部消息 ======
+#[derive(Debug)]
+enum PtyMsg {
+    Chunk(String),
+    Session(String),
+    Approval { command_preview: String, risk_description: String },
+    Done(i32),
+    Error(String),
+}
+
 // ====== 二进制发现 ======
-//
-// 顺序按 docs/tech.md §6 拍板：PATH → ~/.local/bin/hermes → 常见 Homebrew 路径。
-// 找到第一个存在且可执行的就返回。
 fn discover_hermes_path() -> Option<PathBuf> {
-    // 1. PATH 上的 hermes
     if let Ok(path) = which_in_path("hermes") {
         return Some(path);
     }
-    // 2. ~/.local/bin/hermes
     if let Some(home) = dirs::home_dir() {
         let p = home.join(".local").join("bin").join("hermes");
         if is_executable(&p) {
             return Some(p);
         }
     }
-    // 3. Homebrew 常见路径
     for cand in [
         "/opt/homebrew/bin/hermes",
         "/usr/local/bin/hermes",
@@ -168,14 +182,143 @@ pub fn hermes_discover() -> DiscoverResult {
     }
 }
 
-// ====== 启动一次对话 ======
+// ====== strip ANSI + \r ======
+fn strip_ansi(s: &str) -> String {
+    let stripped = ANSI_RE.replace_all(s, "");
+    // \r 单独去掉（PTY 行结尾是 \r\n，BufRead 已按 \n split，\r 残留在行尾）
+    stripped.trim_end_matches('\r').to_string()
+}
+
+// ====== PTY 同步读循环（跑在 spawn_blocking 里）======
 //
-// 参数组装顺序（必带的全局开关）：
-//   chat -Q --accept-hooks
-// 然后按需加 -r <session_id>，最后 -q "<full_text>"。
-//
-// system_prompt（research/cowork 气泡用）暂时直接前置拼到 text 里，
-// 简单稳妥；后续若 Hermes 提供 -s/--system 参数可改为开关注入。
+// 职责：
+//   - 按字节积累成"行"（遇到 \n 或 "Choice [" 特殊触发）
+//   - 识别 session_id / 审批提示 / 普通 chunk
+//   - 通过 tx channel 发消息给异步侧
+fn pty_read_loop(
+    mut reader: Box<dyn Read + Send>,
+    tx: tokio::sync::mpsc::UnboundedSender<PtyMsg>,
+) {
+    let mut line_buf = Vec::<u8>::new();
+    // 最近 N 行，用于审批上下文提取
+    let mut context_window: Vec<String> = Vec::new();
+    let mut session_emitted = false;
+    let mut byte_buf = [0u8; 256];
+
+    loop {
+        let n = match reader.read(&mut byte_buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+
+        for &b in &byte_buf[..n] {
+            if b == b'\n' {
+                // 行完成
+                let raw = String::from_utf8_lossy(&line_buf).to_string();
+                line_buf.clear();
+                let line = strip_ansi(&raw);
+                if line.is_empty() {
+                    continue;
+                }
+
+                // 1. session_id
+                if !session_emitted {
+                    if let Some(cap) = SESSION_RE.captures(&line) {
+                        let sid = cap.get(1).unwrap().as_str().to_string();
+                        eprintln!("[hermes-runner/pty] session detected: {sid}");
+                        let _ = tx.send(PtyMsg::Session(sid));
+                        session_emitted = true;
+                        continue;
+                    }
+                }
+
+                // 2. 审批提示：检测 "Choice [" 或 "[o]nce"
+                if line.contains("[o]nce") || line.contains("Choice [") {
+                    let command_preview = context_window
+                        .iter()
+                        .rfind(|l| l.starts_with("    ") || l.starts_with('\t'))
+                        .map(|l| l.trim().to_string())
+                        .unwrap_or_default();
+                    let risk_description = context_window
+                        .iter()
+                        .filter(|l| {
+                            l.contains("Security scan")
+                                || l.contains("DANGEROUS")
+                                || l.contains("[HIGH]")
+                                || l.contains("[MEDIUM]")
+                                || l.contains("[LOW]")
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    eprintln!(
+                        "[hermes-runner/pty] approval prompt detected, preview={:?}",
+                        command_preview
+                    );
+                    let _ = tx.send(PtyMsg::Approval { command_preview, risk_description });
+                    // 审批行本身不进 chunk
+                    continue;
+                }
+
+                // 3. 已获得审批回应行（"✓ Allowed" / "✗ Denied"）—— 不发给前端
+                if line.contains("✓ Allowed") || line.contains("✗ Denied") {
+                    continue;
+                }
+
+                // 4. 续接提示行
+                if line.starts_with("↻ Resumed session") {
+                    continue;
+                }
+
+                // 5. 普通 chunk
+                eprintln!("[hermes-runner/pty] chunk: {}", &line[..line.len().min(80)]);
+                let _ = tx.send(PtyMsg::Chunk(line.clone()));
+
+                // 维护上下文窗口（仅保留最近 20 行）
+                context_window.push(line);
+                if context_window.len() > 20 {
+                    context_window.remove(0);
+                }
+            } else if b != b'\r' {
+                line_buf.push(b);
+
+                // 检测未换行的审批提示（有时 "Choice [o/s/D]: " 后面没有换行，
+                // 直接等待键盘输入）
+                let peek = String::from_utf8_lossy(&line_buf);
+                let peek_stripped = strip_ansi(&peek);
+                if peek_stripped.contains("Choice [") && peek_stripped.ends_with(": ") {
+                    let command_preview = context_window
+                        .iter()
+                        .rfind(|l| l.starts_with("    ") || l.starts_with('\t'))
+                        .map(|l| l.trim().to_string())
+                        .unwrap_or_default();
+                    let risk_description = context_window
+                        .iter()
+                        .filter(|l| {
+                            l.contains("Security scan")
+                                || l.contains("DANGEROUS")
+                                || l.contains("[HIGH]")
+                                || l.contains("[MEDIUM]")
+                                || l.contains("[LOW]")
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    eprintln!(
+                        "[hermes-runner/pty] approval prompt (no-newline), preview={:?}",
+                        command_preview
+                    );
+                    let _ = tx.send(PtyMsg::Approval { command_preview, risk_description });
+                    line_buf.clear();
+                }
+            }
+        }
+    }
+    eprintln!("[hermes-runner/pty] read loop ended");
+}
+
+// ====== 启动一次 PTY 对话 ======
 #[tauri::command]
 pub async fn hermes_start_chat(
     app: AppHandle,
@@ -191,7 +334,7 @@ pub async fn hermes_start_chat(
         .map(ToString::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    // 拼最终 -q 文本：system prompt 在前，用户文本在后
+    // 拼最终 -q 文本
     let full_text = match args.system_prompt.as_deref() {
         Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n---\n\n{}", args.text),
         _ => args.text.clone(),
@@ -208,332 +351,184 @@ pub async fn hermes_start_chat(
     cmd_args.push("-q".into());
     cmd_args.push(full_text);
 
-    // 调试日志：把这次要 spawn 的命令完整打出来（除了正文长度避免刷屏）
-    let preview_args: Vec<String> = cmd_args
-        .iter()
-        .enumerate()
-        .map(|(i, a)| {
-            // 最后一个是正文，截断
-            if i == cmd_args.len() - 1 && a.chars().count() > 60 {
-                let preview: String = a.chars().take(60).collect();
-                format!(
-                    "\"{}…[{}chars]\"",
-                    preview.replace('\n', "\\n"),
-                    a.chars().count()
-                )
-            } else if a.contains(' ') {
-                format!("\"{a}\"")
-            } else {
-                a.clone()
-            }
-        })
-        .collect();
+    // 调试日志
+    let preview_text: String = cmd_args.last().map(|t| {
+        let chars: String = t.chars().take(60).collect();
+        if t.chars().count() > 60 {
+            format!("\"{}…[{}chars]\"", chars.replace('\n', "\\n"), t.chars().count())
+        } else {
+            format!("\"{chars}\"")
+        }
+    }).unwrap_or_default();
     eprintln!(
-        "[hermes-runner] task={} spawn: {} {}",
+        "[hermes-runner] task={} spawn PTY: {} chat -Q --accept-hooks ... -q {}",
         task_id,
         bin.display(),
-        preview_args.join(" ")
+        preview_text
     );
 
-    // spawn
-    let spawn_started = std::time::Instant::now();
-    let mut child = match Command::new(&bin)
-        .args(&cmd_args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(c) => {
-            eprintln!(
-                "[hermes-runner] task={} spawned, child pid={:?}",
-                task_id,
-                c.id()
-            );
-            c
-        }
-        Err(e) => {
-            eprintln!("[hermes-runner] task={} spawn FAILED: {e}", task_id);
-            return Err(format!("Failed to spawn hermes: {e}"));
-        }
-    };
+    // 开 PTY
+    let pty_system = native_pty_system();
+    let pty_pair = pty_system
+        .openpty(PtySize { rows: 50, cols: 220, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| format!("openpty failed: {e}"))?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Could not capture child stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Could not capture child stderr".to_string())?;
-
-    // 注册到 RUNNING（取走 child 之前先放 reader 拿走 pipe；child 本体留着 wait）
-    {
-        let mut map = RUNNING.lock().await;
-        map.insert(task_id.clone(), child);
+    // 构造 CommandBuilder
+    let mut cmd = CommandBuilder::new(&bin);
+    for a in &cmd_args {
+        cmd.arg(a);
     }
 
-    // session_emitted 由 stdout/stderr 两个 reader 共享 —— 谁先看到 session_id 就 emit
-    let session_emitted = Arc::new(Mutex::new(false));
-    // stderr 累积的真错误（非 session_id 行），exit 非 0 时上报
-    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    // 继承当前环境（含 PATH / HOME 等）
+    // portable-pty CommandBuilder 默认继承环境，无需额外操作
 
-    // ====== stdout 行流读取任务 ======
-    let app_stdout = app.clone();
-    let tid_stdout = task_id.clone();
-    let started = spawn_started;
-    let session_emitted_stdout = session_emitted.clone();
-    let stdout_handle = tokio::spawn(async move {
-        let mut reader = BufReader::new(stdout).lines();
-        let mut line_count: u64 = 0;
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    line_count += 1;
-                    let elapsed_ms = started.elapsed().as_millis();
-                    let preview: String = if line.chars().count() > 120 {
-                        let head: String = line.chars().take(120).collect();
-                        format!("{head}…")
-                    } else {
-                        line.clone()
-                    };
-                    eprintln!(
-                        "[hermes-runner] task={} stdout#{} (+{}ms): {}",
-                        tid_stdout, line_count, elapsed_ms, preview
-                    );
-                    // 跳过续接提示行
-                    if line.starts_with("↻ Resumed session") {
-                        continue;
-                    }
-                    // 检测 session_id（一次有效）
-                    if try_emit_session(
-                        &app_stdout,
-                        &tid_stdout,
-                        &line,
-                        &session_emitted_stdout,
-                        "stdout",
-                    )
-                    .await
-                    {
-                        continue;
-                    }
-                    // 其余作 chunk 输出
-                    let r = app_stdout.emit_to(
+    let child = pty_pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("spawn_command failed: {e}"))?;
+    drop(pty_pair.slave); // slave 端 fd 给 child 用，parent 不需要
+
+    // 取出 reader / writer
+    let reader = pty_pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("clone_reader failed: {e}"))?;
+    let writer = pty_pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("take_writer failed: {e}"))?;
+
+    // 存 writer 到 STDIN_MAP
+    {
+        let mut map = STDIN_MAP.lock().await;
+        map.insert(task_id.clone(), writer);
+    }
+
+    // 建 channel：读循环 → 异步侧
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PtyMsg>();
+
+    // spawn_blocking 跑同步读循环
+    let tid_read = task_id.clone();
+    let tx_read = tx.clone();
+    let child_arc = Arc::new(std::sync::Mutex::new(child));
+    let child_arc_wait = child_arc.clone();
+
+    let read_handle = tokio::task::spawn_blocking(move || {
+        eprintln!("[hermes-runner/pty] read thread started task={}", tid_read);
+        pty_read_loop(reader, tx_read);
+        eprintln!("[hermes-runner/pty] read thread done task={}", tid_read);
+    });
+
+    // wait child（spawn_blocking，等 read 先结束）
+    let tid_wait = task_id.clone();
+    let tx_wait = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        // 等读循环先退出（read EOF 后才 wait，避免先 wait 锁住读）
+        // 这里简单用 sleep 轮询，因为 read 退出后 tx drop 会让 rx 关闭
+        // 实际等 child 退出就够了
+        let exit_code = match child_arc_wait.lock().unwrap().wait() {
+            Ok(status) => status.exit_code() as i32,
+            Err(_) => -1,
+        };
+        eprintln!("[hermes-runner/pty] child exited task={} exit={}", tid_wait, exit_code);
+        let _ = tx_wait.send(PtyMsg::Done(exit_code));
+    });
+
+    // 异步侧：从 rx 收消息，emit Tauri 事件
+    let app_emit = app.clone();
+    let tid_emit = task_id.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                PtyMsg::Chunk(line) => {
+                    let _ = app_emit.emit_to(
                         PET_WINDOW_LABEL,
                         EV_CHUNK,
-                        ChunkPayload {
-                            task_id: tid_stdout.clone(),
-                            line: line.clone(),
-                        },
-                    );
-                    eprintln!(
-                        "[hermes-runner] task={} EMIT chunk ({} chars) -> {:?}",
-                        tid_stdout,
-                        line.len(),
-                        r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+                        ChunkPayload { task_id: tid_emit.clone(), line },
                     );
                 }
-                Ok(None) => {
-                    eprintln!(
-                        "[hermes-runner] task={} stdout EOF, total lines={}, elapsed={}ms",
-                        tid_stdout,
-                        line_count,
-                        started.elapsed().as_millis()
-                    );
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("[hermes-runner] task={} stdout read err: {e}", tid_stdout);
-                    let _ = app_stdout.emit_to(
+                PtyMsg::Session(sid) => {
+                    let _ = app_emit.emit_to(
                         PET_WINDOW_LABEL,
-                        EV_ERROR,
-                        ErrorPayload {
-                            task_id: tid_stdout.clone(),
-                            message: format!("Failed to read stdout: {e}"),
+                        EV_SESSION,
+                        SessionPayload { task_id: tid_emit.clone(), session_id: sid },
+                    );
+                }
+                PtyMsg::Approval { command_preview, risk_description } => {
+                    let _ = app_emit.emit_to(
+                        PET_WINDOW_LABEL,
+                        EV_APPROVAL,
+                        ApprovalPayload {
+                            task_id: tid_emit.clone(),
+                            command_preview,
+                            risk_description,
                         },
                     );
-                    break;
                 }
-            }
-        }
-    });
-
-    // ====== stderr 行流读取任务（必须实时读避免 pipe 阻塞）======
-    // 行内若是 `session_id: ...` 就 emit session；其余行累积到 stderr_buf。
-    let app_stderr = app.clone();
-    let tid_stderr = task_id.clone();
-    let session_emitted_stderr = session_emitted.clone();
-    let stderr_buf_clone = stderr_buf.clone();
-    let stderr_handle = tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr).lines();
-        let mut line_count: u64 = 0;
-        loop {
-            match reader.next_line().await {
-                Ok(Some(line)) => {
-                    line_count += 1;
-                    let elapsed_ms = started.elapsed().as_millis();
-                    let preview: String = if line.chars().count() > 120 {
-                        let head: String = line.chars().take(120).collect();
-                        format!("{head}…")
-                    } else {
-                        line.clone()
-                    };
-                    eprintln!(
-                        "[hermes-runner] task={} stderr#{} (+{}ms): {}",
-                        tid_stderr, line_count, elapsed_ms, preview
-                    );
-                    // 检测 session_id（与 stdout 共享一次性标志）
-                    if try_emit_session(
-                        &app_stderr,
-                        &tid_stderr,
-                        &line,
-                        &session_emitted_stderr,
-                        "stderr",
-                    )
-                    .await
+                PtyMsg::Done(exit_code) => {
+                    // 清理 STDIN_MAP
                     {
-                        continue;
+                        let mut map = STDIN_MAP.lock().await;
+                        map.remove(&tid_emit);
                     }
-                    // 其余 stderr 行累积，等子进程退出码非 0 再上报
-                    let mut buf = stderr_buf_clone.lock().await;
-                    if !buf.is_empty() {
-                        buf.push('\n');
-                    }
-                    buf.push_str(&line);
-                }
-                Ok(None) => {
-                    eprintln!(
-                        "[hermes-runner] task={} stderr EOF, total lines={}",
-                        tid_stderr, line_count
+                    let _ = app_emit.emit_to(
+                        PET_WINDOW_LABEL,
+                        EV_DONE,
+                        DonePayload { task_id: tid_emit.clone(), exit_code },
                     );
+                    eprintln!("[hermes-runner/pty] EMIT done task={} exit={}", tid_emit, exit_code);
                     break;
                 }
-                Err(e) => {
-                    eprintln!("[hermes-runner] task={} stderr read err: {e}", tid_stderr);
-                    break;
-                }
-            }
-        }
-    });
-
-    // ====== 等两个 reader 都收完，再 wait child 拿退出码 ======
-    let app_done = app.clone();
-    let tid_done = task_id.clone();
-    let stderr_buf_done = stderr_buf.clone();
-    tokio::spawn(async move {
-        // 等 stdout/stderr reader 收完
-        let _ = stdout_handle.await;
-        let _ = stderr_handle.await;
-
-        // wait child + 摘出 RUNNING
-        let mut map = RUNNING.lock().await;
-        if let Some(mut child) = map.remove(&tid_done) {
-            let exit_code = match child.wait().await {
-                Ok(status) => status.code().unwrap_or(-1),
-                Err(_) => -1,
-            };
-            eprintln!(
-                "[hermes-runner] task={} done, exit={}, total elapsed={}ms",
-                tid_done,
-                exit_code,
-                started.elapsed().as_millis()
-            );
-
-            // 退出码非 0 → 把累积的 stderr 上报为 error
-            if exit_code != 0 {
-                let buf = stderr_buf_done.lock().await;
-                if !buf.is_empty() {
-                    let _ = app_done.emit_to(
+                PtyMsg::Error(msg) => {
+                    let _ = app_emit.emit_to(
                         PET_WINDOW_LABEL,
                         EV_ERROR,
-                        ErrorPayload {
-                            task_id: tid_done.clone(),
-                            message: buf.clone(),
-                        },
+                        ErrorPayload { task_id: tid_emit.clone(), message: msg },
                     );
                 }
             }
-
-            let r = app_done.emit_to(
-                PET_WINDOW_LABEL,
-                EV_DONE,
-                DonePayload {
-                    task_id: tid_done.clone(),
-                    exit_code,
-                },
-            );
-            eprintln!(
-                "[hermes-runner] task={} EMIT done -> {:?}",
-                tid_done,
-                r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
-            );
         }
+        eprintln!("[hermes-runner/pty] emit loop done task={}", tid_emit);
     });
+
+    // read_handle 等待（detach，不阻塞 command 返回）
+    drop(read_handle);
 
     Ok(StartChatResult { task_id })
 }
 
-// 尝试从一行里识别 session_id 并 emit。返回 true 表示这行是 session 行（已消费）。
-// from 仅用于日志区分来源（"stdout" / "stderr"）。
-async fn try_emit_session(
-    app: &AppHandle,
-    task_id: &str,
-    line: &str,
-    flag: &Arc<Mutex<bool>>,
-    from: &str,
-) -> bool {
-    let cap = match SESSION_RE.captures(line) {
-        Some(c) => c,
-        None => return false,
-    };
-    let mut emitted = flag.lock().await;
-    if *emitted {
-        // 已经发过了，但这行确实是 session_id 行，不要再当 chunk 发出去
-        return true;
-    }
-    *emitted = true;
-    let sid = cap.get(1).unwrap().as_str().to_string();
-    eprintln!(
-        "[hermes-runner] task={} session detected from {}: {}",
-        task_id, from, sid
-    );
-    let r = app.emit_to(
-        PET_WINDOW_LABEL,
-        EV_SESSION,
-        SessionPayload {
-            task_id: task_id.to_string(),
-            session_id: sid,
-        },
-    );
-    eprintln!(
-        "[hermes-runner] task={} EMIT session -> {:?}",
-        task_id,
-        r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
-    );
-    true
-}
-
-// ====== 取消跑着的对话 ======
+// ====== 取消（PTY 版：向子进程发 SIGKILL 通过 kill writer 一侧）======
+//
+// portable-pty 的 Child 没有 .kill()，只能通过 kill(pid, SIGKILL)。
+// 这里清理 STDIN_MAP（关掉写端 fd 会触发 SIGHUP 让 Hermes 退出）。
 #[tauri::command]
 pub async fn hermes_cancel(task_id: String) -> Result<(), String> {
-    eprintln!("[hermes-runner] cancel requested: task={}", task_id);
-    let mut map = RUNNING.lock().await;
-    if let Some(child) = map.get_mut(&task_id) {
-        // tokio Child::start_kill 是非阻塞 SIGKILL
-        if let Err(e) = child.start_kill() {
-            eprintln!("[hermes-runner] cancel kill FAILED: {e}");
-            return Err(format!("Failed to kill process: {e}"));
-        }
-        eprintln!(
-            "[hermes-runner] cancel kill signal sent for task={}",
-            task_id
-        );
-    } else {
-        eprintln!(
-            "[hermes-runner] cancel: task={} not in RUNNING (already done?)",
-            task_id
-        );
-    }
+    eprintln!("[hermes-runner] cancel task={}", task_id);
+    // 关掉 stdin writer → 子进程收到 SIGHUP/EIO 会退出
+    let mut map = STDIN_MAP.lock().await;
+    map.remove(&task_id);
     Ok(())
+}
+
+// ====== 向子进程 stdin 写入审批选择 ======
+#[tauri::command]
+pub async fn hermes_send_input(task_id: String, input: String) -> Result<(), String> {
+    eprintln!(
+        "[hermes-runner] send_input task={} input={:?}",
+        task_id, input
+    );
+    let mut map = STDIN_MAP.lock().await;
+    if let Some(writer) = map.get_mut(&task_id) {
+        let line = format!("{}\n", input.trim());
+        writer
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("Failed to write stdin: {e}"))?;
+        writer
+            .flush()
+            .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+        eprintln!("[hermes-runner] send_input ok task={}", task_id);
+        Ok(())
+    } else {
+        Err(format!("No stdin writer for task {task_id}"))
+    }
 }

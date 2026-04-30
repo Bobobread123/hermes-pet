@@ -1,107 +1,115 @@
-// 流 A spike 用占位 pet：一个 100×100 的米色 SVG 圆。
+// PetCircle — 像素角色 + 动画状态机
 //
-// 当前架构（2026-04-29）：
-// 1. Rust 启动时窗口铺满主屏 + 默认全穿透
-// 2. PetCircle 上报 hit region 矩形，鼠标进矩形 Rust 关穿透 → 接管事件
-// 3. 圆几何命中（在矩形 hit region 内再做圆精确判定）：圆内 → hover 表情 + 可拖动
-// 4. 通过 onPosChange 把当前位置外推给 App，用于 BubbleStack 跟随渲染
+// 动画清单（按 UI-UX-Style.md）:
+//   breathing  : 微呼吸，translateY ±1px，2.5s 循环，始终开（除 zzz 变慢）
+//   idle-spin  : 整体旋转 360°，0.8s（每 60s 随机触发之一）
+//   idle-shake : scaleX -1 再回来（扭头感），0.6s
+//   head-pat   : 眯眼 + 翅膀抖两下，500ms
+//   sleeping   : 闭眼（眼 scaleY→0）+ zzz 字浮现，3min 无鼠标触发
+//   wake       : 眼睛恢复 + 眨一下，200ms
 //
-// 调试条（左下角黑底白字）spike 验收后删除。
+// 调试条（左下角）spike 验收后删除。
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { updateHitRegion } from "../hitRegions";
 import "./PetCircle.css";
 
-const SIZE = 100;
-const RADIUS = SIZE / 2;
-const SCALE = SIZE / 200;
+// 设计稿 viewBox = 326×269，像素格 = 10px
+// 身体（金色主体）在 x=103~213, y=80~170
+const SPRITE_W = 163; // 326 * 0.5
+const SPRITE_H = 135; // 269 * 0.5
 
-function s(value: number): number {
-  return value * SCALE;
-}
+const SCALE       = SPRITE_W / 326;
+const BODY_LEFT   = Math.round(103 * SCALE); // ~51
+const BODY_WIDTH  = Math.round(120 * SCALE); // ~60
+const BODY_TOP    = Math.round(80  * SCALE); // ~40
+const BODY_HEIGHT = Math.round(110 * SCALE); // ~55
+
+const HIT_W = BODY_WIDTH;
+const HIT_H = BODY_HEIGHT;
+
+export const PET_SIZE = BODY_WIDTH;
+/** sprite 完整宽度（含翅膀），App 层用来定位 BubbleStack wrapper */
+export const PET_SPRITE_W = SPRITE_W;
+/** 翅膀左边缘到 sprite 左上角的距离，BubbleStack 贴翅膀外侧用 */
+export const PET_WING_LEFT = Math.round(38 * SCALE); // ~19px
+
+type AnimState = "base" | "idle-spin" | "idle-shake" | "head-pat" | "sleeping" | "waking";
 
 interface PetCircleProps {
-  /** 等待 / 接收 Hermes 输出时显示腮红 */
   blushing?: boolean;
-  /** 把当前位置和尺寸暴露给上层（BubbleStack 跟随定位用） */
   onPosChange?: (pos: { x: number; y: number; size: number }) => void;
 }
-
-export const PET_SIZE = SIZE;
 
 export default function PetCircle({
   blushing = false,
   onPosChange,
 }: PetCircleProps) {
   const [pos, setPos] = useState(() => ({
-    x: Math.max(0, window.innerWidth / 2 - SIZE / 2),
-    y: Math.max(0, window.innerHeight / 3 - SIZE / 2),
+    x: Math.max(0, window.innerWidth / 2 - SPRITE_W / 2),
+    y: Math.max(0, window.innerHeight / 3 - SPRITE_H / 2),
   }));
-  const [dragging, setDragging] = useState(false);
-  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging]   = useState(false);
+  const [hovered, setHovered]     = useState(false);
+  const [animState, setAnimState] = useState<AnimState>("base");
 
-  // === spike 调试 state ===
+  // spike 调试
   const [moves, setMoves] = useState(0);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
-  const visualPos = {
-    x: pos.x,
-    y: pos.y,
-  };
-  const visualPosRef = useRef(visualPos);
-  visualPosRef.current = visualPos;
+  const posRef       = useRef(pos);
+  posRef.current     = pos;
+  const animStateRef = useRef(animState);
+  animStateRef.current = animState;
 
+  // hit region 上报
   useEffect(() => {
-    updateHitRegion("pet-circle", {
-      x: visualPos.x,
-      y: visualPos.y,
-      width: SIZE,
-      height: SIZE,
-    });
-
-    onPosChange?.({ x: pos.x, y: pos.y, size: SIZE });
-
+    const hitX = pos.x + BODY_LEFT;
+    const hitY = pos.y + BODY_TOP;
+    updateHitRegion("pet-circle", { x: hitX, y: hitY, width: HIT_W, height: HIT_H });
+    onPosChange?.({ x: hitX, y: hitY, size: HIT_W });
     return () => updateHitRegion("pet-circle", null);
-  }, [pos.x, pos.y, visualPos.x, visualPos.y, onPosChange]);
+  }, [pos.x, pos.y, onPosChange]);
 
-  // 拖动：dragRef 记录鼠标按下时鼠标点相对圆左上的偏移
+  // 鼠标事件
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  const lastMouseTimeRef = useRef(Date.now());
 
   useEffect(() => {
-    function isInsideCircle(x: number, y: number) {
-      const cx = visualPosRef.current.x + RADIUS;
-      const cy = visualPosRef.current.y + RADIUS;
-      const dx = x - cx;
-      const dy = y - cy;
-      return dx * dx + dy * dy <= RADIUS * RADIUS;
+    function isInsideBody(mx: number, my: number) {
+      const { x, y } = posRef.current;
+      return mx >= x + BODY_LEFT && mx <= x + BODY_LEFT + HIT_W
+          && my >= y + BODY_TOP  && my <= y + BODY_TOP  + HIT_H;
     }
 
     function onMove(e: MouseEvent) {
-      const x = e.clientX;
-      const y = e.clientY;
+      lastMouseTimeRef.current = Date.now();
+      const x = e.clientX, y = e.clientY;
       setMoves((m) => m + 1);
       setMouse({ x: Math.round(x), y: Math.round(y) });
 
-      if (dragRef.current) {
-        setPos({
-          x: x - dragRef.current.dx,
-          y: y - dragRef.current.dy,
-        });
-        return;
+      // 唤醒 zzz
+      if (animStateRef.current === "sleeping") {
+        setAnimState("waking");
+        setTimeout(() => setAnimState("base"), 400);
       }
 
-      const inside = isInsideCircle(x, y);
-      setHovered(inside);
+      if (dragRef.current) {
+        setPos({ x: x - dragRef.current.dx, y: y - dragRef.current.dy });
+        return;
+      }
+      setHovered(isInsideBody(x, y));
     }
 
     function onDown(e: MouseEvent) {
-      if (!isInsideCircle(e.clientX, e.clientY)) return;
+      if (!isInsideBody(e.clientX, e.clientY)) return;
       dragRef.current = {
-        dx: e.clientX - visualPosRef.current.x,
-        dy: e.clientY - visualPosRef.current.y,
+        dx: e.clientX - posRef.current.x,
+        dy: e.clientY - posRef.current.y,
       };
       setDragging(true);
     }
+
     function onUp() {
       dragRef.current = null;
       setDragging(false);
@@ -110,7 +118,6 @@ export default function PetCircle({
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mousedown", onDown);
     window.addEventListener("mouseup", onUp);
-
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mousedown", onDown);
@@ -118,57 +125,255 @@ export default function PetCircle({
     };
   }, []);
 
+  // 点击头部 → 摸头动画
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    const mx = e.clientX, my = e.clientY;
+    const { x, y } = posRef.current;
+    const headBottom = y + Math.round(145 * SCALE);
+    if (mx >= x + BODY_LEFT && mx <= x + BODY_LEFT + HIT_W
+     && my >= y && my <= headBottom) {
+      if (animStateRef.current !== "base" && animStateRef.current !== "sleeping") return;
+      setAnimState("head-pat");
+      setTimeout(() => setAnimState("base"), 500);
+    }
+  }, []);
+
+  // idle 定时器：每 60s 随机触发
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (animStateRef.current !== "base") return;
+      const which = Math.random() < 0.5 ? "idle-spin" : "idle-shake";
+      setAnimState(which);
+      const dur = which === "idle-spin" ? 800 : 600;
+      setTimeout(() => setAnimState("base"), dur);
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 睡眠定时器：3min 无鼠标移动
+  useEffect(() => {
+    const SLEEP_AFTER = 3 * 60 * 1000;
+    const timer = setInterval(() => {
+      if (animStateRef.current !== "base") return;
+      if (Date.now() - lastMouseTimeRef.current >= SLEEP_AFTER) {
+        setAnimState("sleeping");
+      }
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const sleeping = animState === "sleeping";
+
   return (
     <>
       <div
-        className={`pet-circle${hovered ? " is-hovered" : ""}${blushing ? " is-blushing" : ""}${dragging ? " is-dragging" : ""}`}
+        className={[
+          "pet-circle",
+          hovered      ? "is-hovered"  : "",
+          blushing     ? "is-blushing" : "",
+          dragging     ? "is-dragging" : "",
+          `anim-${animState}`,
+        ].filter(Boolean).join(" ")}
         style={{
-          width: SIZE,
-          height: SIZE,
-          transform: `translate(${visualPos.x}px, ${visualPos.y}px)`,
+          width:     SPRITE_W,
+          height:    SPRITE_H,
+          transform: `translate(${pos.x}px, ${pos.y}px)`,
         }}
+        onClick={handleClick}
       >
-        <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          <defs>
-            <radialGradient id="petBody" cx="50%" cy="40%" r="60%">
-              <stop offset="0%" stopColor="#FFF8EC" />
-              <stop offset="100%" stopColor="#F5E6D3" />
-            </radialGradient>
-          </defs>
-          <circle cx={SIZE / 2} cy={SIZE / 2} r={SIZE / 2 - s(4)} fill="url(#petBody)" stroke="#D4B896" strokeWidth={s(2)} />
-          <circle cx={SIZE / 2 - s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
-          <circle cx={SIZE / 2 + s(28)} cy={SIZE / 2 - s(6)} r={hovered ? s(4) : s(8)} fill="#2B2B2B" />
-          <circle
-            className="pet-cheek"
-            cx={SIZE / 2 - s(42)}
-            cy={SIZE / 2 + s(16)}
-            r={s(15)}
-            fill="#F5A0B0"
-            opacity={blushing ? 0.72 : 0}
-          />
-          <circle
-            className="pet-cheek"
-            cx={SIZE / 2 + s(42)}
-            cy={SIZE / 2 + s(16)}
-            r={s(15)}
-            fill="#F5A0B0"
-            opacity={blushing ? 0.72 : 0}
-          />
-          <path
-            d={
-              hovered
-                ? `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(22)} Q ${SIZE / 2} ${SIZE / 2 + s(38)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(22)}`
-                : `M ${SIZE / 2 - s(18)} ${SIZE / 2 + s(28)} Q ${SIZE / 2} ${SIZE / 2 + s(32)} ${SIZE / 2 + s(18)} ${SIZE / 2 + s(28)}`
-            }
-            fill="none"
-            stroke="#2B2B2B"
-            strokeWidth={s(3)}
-            strokeLinecap="round"
-          />
+        <svg
+          width={SPRITE_W}
+          height={SPRITE_H}
+          viewBox="0 0 326 269"
+          xmlns="http://www.w3.org/2000/svg"
+          shapeRendering="crispEdges"
+          style={{ display: "block" }}
+          className="pet-sprite"
+        >
+          {/* ── 身体主色 ── */}
+          <rect x="123" y="80" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="193" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="103" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="193" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="193" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="193" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="103" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="103" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="103" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="120" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="130" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="140" width="10" height="10" fill="#F9DA77"/>
+          <rect x="123" y="150" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="193" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="193" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="113" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="103" y="110" width="10" height="10" fill="#F9DA77"/>
+          <rect x="103" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="80" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="80" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="80" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="80" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="80" width="10" height="10" fill="#F9DA77"/>
+          <rect x="153" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="133" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="183" y="100" width="10" height="10" fill="#F9DA77"/>
+          <rect x="143" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="163" y="90" width="10" height="10" fill="#F9DA77"/>
+          <rect x="173" y="90" width="10" height="10" fill="#F9DA77"/>
+
+          {/* ── 阴影色（右侧 + 底行） ── */}
+          <rect x="153" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="143" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="163" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="203" y="130" width="10" height="10" fill="#F1D16E"/>
+          <rect x="173" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="203" y="120" width="10" height="10" fill="#F1D16E"/>
+          <rect x="213" y="120" width="10" height="10" fill="#E7C559"/>
+          <rect x="183" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="203" y="140" width="10" height="10" fill="#F1D16E"/>
+          <rect x="193" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="113" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="103" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="213" y="130" width="10" height="10" fill="#E7C559"/>
+          <rect x="213" y="140" width="10" height="10" fill="#E7C559"/>
+          <rect x="203" y="150" width="10" height="10" fill="#F1D16E"/>
+          <rect x="203" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="213" y="150" width="10" height="10" fill="#E7C559"/>
+          <rect x="213" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="133" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="123" y="160" width="10" height="10" fill="#E7C559"/>
+          <rect x="193" y="90" width="10" height="10" fill="#F1D16E"/>
+          <rect x="203" y="90" width="10" height="10" fill="#E7C559"/>
+          <rect x="203" y="110" width="10" height="10" fill="#F1D16E"/>
+          <rect x="203" y="100" width="10" height="10" fill="#F1D16E"/>
+          <rect x="213" y="110" width="10" height="10" fill="#E7C559"/>
+          <rect x="213" y="100" width="10" height="10" fill="#E7C559"/>
+          <rect x="183" y="80" width="10" height="10" fill="#F1D16E"/>
+          <rect x="193" y="80" width="10" height="10" fill="#E7C559"/>
+
+          {/* ── 眼睛（left x=133, right x=183，各 10×20） ── */}
+          <rect className="eye eye-left"  x="133" y="120" width="10" height="20" fill="#303030"/>
+          <rect className="eye eye-right" x="183" y="120" width="10" height="20" fill="#303030"/>
+
+          {/* ── 嘴巴（x=153, y=150, 20×5） ── */}
+          <rect className="mouth" x="153" y="150" width="20" height="5" fill="#303030"/>
+
+          {/* ── 腿/底座（#929292，y=180） ── */}
+          <rect x="123" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="133" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="143" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="153" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="163" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="173" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="183" y="180" width="10" height="10" fill="#929292"/>
+          <rect x="193" y="180" width="10" height="10" fill="#929292"/>
+
+          {/* ── 左翅膀（白色 + fillOpacity 渐变） ── */}
+          <rect className="wing wing-left" x="88" y="135" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-left" x="78" y="125" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-left" x="88" y="125" width="10" height="10" fill="white"/>
+          <rect className="wing wing-left" x="78" y="115" width="10" height="10" fill="white"/>
+          <rect className="wing wing-left" x="68" y="105" width="10" height="10" fill="white"/>
+          <rect className="wing wing-left" x="68" y="125" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-left" x="68" y="115" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-left" x="58" y="125" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-left" x="58" y="115" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-left" x="48" y="115" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-left" x="38" y="115" width="10" height="10" fill="white"/>
+          <rect className="wing wing-left" x="58" y="105" width="10" height="10" fill="white"/>
+          <rect className="wing wing-left" x="48" y="125" width="10" height="10" fill="white" fillOpacity="0.8"/>
+          <rect className="wing wing-left" x="58" y="135" width="10" height="10" fill="white" fillOpacity="0.8"/>
+          <rect className="wing wing-left" x="88" y="145" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-left" x="78" y="135" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-left" x="68" y="135" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-left" x="78" y="145" width="10" height="10" fill="white" fillOpacity="0.9"/>
+
+          {/* ── 右翅膀（左翅镜像） ── */}
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 238 135)" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 125)" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 238 125)" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 115)" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 105)" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 125)" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 115)" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 125)" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 115)" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 278 115)" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 288 115)" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 105)" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 278 125)" width="10" height="10" fill="white" fillOpacity="0.8"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 135)" width="10" height="10" fill="white" fillOpacity="0.8"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 238 145)" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 135)" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 135)" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 145)" width="10" height="10" fill="white" fillOpacity="0.9"/>
         </svg>
+
+        {/* 睡眠时头顶飘 zzz */}
+        {sleeping && (
+          <div className="pet-zzz" aria-hidden="true">
+            <span className="zzz-1">z</span>
+            <span className="zzz-2">z</span>
+            <span className="zzz-3">Z</span>
+          </div>
+        )}
+
+        {/* hover 时身体区光晕 */}
+        {hovered && !sleeping && (
+          <div
+            className="pet-hover-glow"
+            style={{ left: BODY_LEFT, top: BODY_TOP, width: HIT_W, height: HIT_H }}
+          />
+        )}
       </div>
+
       <div className="pet-debug">
-        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(visualPos.x)},{Math.round(visualPos.y)}) hov={String(hovered)} blush={String(blushing)}
+        moves={moves} mouse=({mouse.x},{mouse.y}) pet=({Math.round(pos.x)},{Math.round(pos.y)}) hov={String(hovered)} blush={String(blushing)} anim={animState}
       </div>
     </>
   );
