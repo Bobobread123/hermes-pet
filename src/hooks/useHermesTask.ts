@@ -76,6 +76,18 @@ interface ErrorEventPayload {
   message: string;
 }
 
+interface ApprovalEventPayload {
+  task_id: string;
+  command_preview: string;
+  risk_description: string;
+}
+
+export interface ApprovalRequest {
+  taskId: string;
+  commandPreview: string;
+  riskDescription: string;
+}
+
 export interface UseHermesTaskState {
   status: TaskStatus;
   /** 当前 task 累积的所有 stdout 行（按到达顺序拼接，含换行） */
@@ -86,6 +98,8 @@ export interface UseHermesTaskState {
   taskId: string | null;
   /** 错误信息 / 非 0 退出码描述 */
   errorMessage: string | null;
+  /** 当前等待用户审批的请求（null = 无审批等待中） */
+  approvalRequest: ApprovalRequest | null;
 }
 
 export interface UseHermesTaskApi extends UseHermesTaskState {
@@ -95,6 +109,8 @@ export interface UseHermesTaskApi extends UseHermesTaskState {
   cancel: () => Promise<void>;
   /** 重置到 idle 态（清空 output / status / 错误，但保留 sessionId 以便续接） */
   reset: (opts?: { keepSession?: boolean }) => void;
+  /** 回复审批请求：'o' = once / 's' = session / 'd' = deny */
+  sendApproval: (choice: "o" | "s" | "d") => Promise<void>;
 }
 
 function createTaskId(): string {
@@ -113,6 +129,7 @@ export function useHermesTask(): UseHermesTaskApi {
     sessionId: null,
     taskId: null,
     errorMessage: null,
+    approvalRequest: null,
   });
 
   // 用 ref 持有当前 task_id，事件回调里靠它过滤"自己的事件"
@@ -164,16 +181,29 @@ export function useHermesTask(): UseHermesTaskApi {
         currentTaskIdRef.current = null;
       });
 
+      const unApproval = await listen<ApprovalEventPayload>("hermes-approval", (e) => {
+        if (e.payload.task_id !== currentTaskIdRef.current) return;
+        setState((s) => ({
+          ...s,
+          approvalRequest: {
+            taskId: e.payload.task_id,
+            commandPreview: e.payload.command_preview,
+            riskDescription: e.payload.risk_description,
+          },
+        }));
+      });
+
       if (disposed) {
         // 组件已卸载，立刻取消
         unSession();
         unChunk();
         unDone();
         unError();
+        unApproval();
         return;
       }
 
-      unlisteners.push(unSession, unChunk, unDone, unError);
+      unlisteners.push(unSession, unChunk, unDone, unError, unApproval);
     }
 
     subscribe().catch((e) => {
@@ -211,6 +241,7 @@ export function useHermesTask(): UseHermesTaskApi {
       sessionId: args.sessionId ?? s.sessionId, // 续接时保留旧 session
       taskId,
       errorMessage: null,
+      approvalRequest: null,
     }));
 
     const backendArgs: StartChatBackendArgs = {
@@ -267,7 +298,21 @@ export function useHermesTask(): UseHermesTaskApi {
       sessionId: keep ? s.sessionId : null,
       taskId: null,
       errorMessage: null,
+      approvalRequest: null,
     }));
+  }, []);
+
+  // ---- sendApproval：向子进程写入审批选择 ----
+  const sendApproval = useCallback(async (choice: "o" | "s" | "d") => {
+    const id = currentTaskIdRef.current;
+    if (!id) return;
+    // 清除审批弹窗（无论结果如何）
+    setState((s) => ({ ...s, approvalRequest: null }));
+    try {
+      await invoke("hermes_send_input", { taskId: id, input: choice });
+    } catch (e) {
+      console.warn("hermes_send_input failed:", e);
+    }
   }, []);
 
   return {
@@ -275,5 +320,6 @@ export function useHermesTask(): UseHermesTaskApi {
     submit,
     cancel,
     reset,
+    sendApproval,
   };
 }

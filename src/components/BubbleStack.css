@@ -7,9 +7,8 @@
  */
 
 .bubble-stack {
-  position: fixed;
+  position: absolute;
   pointer-events: auto;
-  /* 收起态用 column 自然堆叠，展开态用绝对定位每个气泡 */
 }
 
 .bubble-stack.is-expanded {
@@ -544,4 +543,146 @@
   background: #f5e6d3;
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+/* ====== 审批卡片 ====== */
+.bubble-approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 11px 13px 13px;
+  background: rgba(255, 200, 80, 0.07);
+  border: 1px solid rgba(200, 160, 60, 0.30);
+  border-radius: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+}
+
+/* 顶部：图标 + 风险信息一行 */
+.bubble-approval-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.bubble-approval-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+  line-height: 1.5;
+  margin-top: 1px;
+}
+
+.bubble-approval-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bubble-approval-risk {
+  font-size: 11px;
+  color: #7a6840;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubble-approval-cmd {
+  display: inline-block;
+  font-size: 11px;
+  font-family: "SF Mono", "Menlo", "Monaco", monospace;
+  background: rgba(0, 0, 0, 0.055);
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: #2e2416;
+  word-break: break-all;
+  border: 1px solid rgba(0,0,0,0.06);
+}
+
+/* 问题文字 */
+.bubble-approval-question {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3a2e18;
+  padding-left: 1px;
+}
+
+/* 三按钮行 */
+.bubble-approval-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bubble-approval-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 6px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, box-shadow 0.12s, transform 0.1s;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  white-space: nowrap;
+  /* 立体感：inset highlight + drop shadow */
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    0 1px 2px rgba(0,0,0,0.10);
+}
+
+.bubble-approval-btn:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    0 3px 6px rgba(0,0,0,0.13);
+}
+
+.bubble-approval-btn:active {
+  transform: translateY(0px);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.30),
+    0 1px 1px rgba(0,0,0,0.08);
+}
+
+/* 允许一次：绿 */
+.bubble-approval-btn.is-once {
+  background: linear-gradient(to bottom, #5ec47e, #45a869);
+  border: 1px solid #3a9058;
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.18);
+}
+.bubble-approval-btn.is-once:hover {
+  background: linear-gradient(to bottom, #68ce88, #4db372);
+}
+
+/* 本次全允许：蓝 */
+.bubble-approval-btn.is-session {
+  background: linear-gradient(to bottom, #62a8e8, #4487cc);
+  border: 1px solid #3070b0;
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.18);
+}
+.bubble-approval-btn.is-session:hover {
+  background: linear-gradient(to bottom, #6db2f0, #4d92d6);
+}
+
+/* 拒绝：中性灰 */
+.bubble-approval-btn.is-deny {
+  background: linear-gradient(to bottom, #f0ede8, #e0dbd3);
+  border: 1px solid #c4bdb4;
+  color: #5a5040;
+}
+.bubble-approval-btn.is-deny:hover {
+  background: linear-gradient(to bottom, #f5f2ee, #e8e3db);
+}
+
+/* 按钮内小图标 */
+.bubble-approval-btn-icon {
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
 }

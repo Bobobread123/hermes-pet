@@ -21,6 +21,7 @@
 //   - 角色 SVG 替换（先借 PetCircle 占位）
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { updateHitRegion } from "../hitRegions";
 import { useHermesTask, type TaskStatus } from "../hooks/useHermesTask";
@@ -31,12 +32,17 @@ import {
 import "./BubbleStack.css";
 
 interface BubbleStackProps {
-  /** 桌宠当前位置（左上角，CSS px） */
-  petPos: { x: number; y: number };
-  /** 桌宠尺寸 */
+  /** 桌宠尺寸（wrapper 内相对定位，不再需要 petPos 绝对坐标） */
   petSize: number;
+  /** 桌宠在屏幕上的绝对位置，仅用于 hit region 上报（视觉定位走 wrapper transform） */
+  petAbsPos: { x: number; y: number };
   /** 任一气泡等待 / 接收 Hermes 输出时，上报给桌宠本体做表情反馈 */
   onWaitingOutputChange?: (kind: BubbleKind, waiting: boolean) => void;
+  /**
+   * App 层注册一个回调，拖拽时直接调用来同步移动 popover DOM（绕过 React 渲染）。
+   * fn(dx, dy)：相对于拖拽起点的偏移量；松开时传 (0,0) 归零。
+   */
+  onRegisterPopoverMove?: (fn: (dx: number, dy: number) => void) => void;
 }
 
 const STACK_WIDTH_COLLAPSED = 24; // 收起态：仅小圆点的列宽
@@ -174,9 +180,10 @@ function clampPopoverLeft(value: number, width: number): number {
 }
 
 export default function BubbleStack({
-  petPos,
   petSize,
+  petAbsPos,
   onWaitingOutputChange,
+  onRegisterPopoverMove,
 }: BubbleStackProps) {
   const [hovered, setHovered] = useState(false);
   // 当前打开浮窗的气泡（最多一个）。null = 都没开
@@ -212,7 +219,7 @@ export default function BubbleStack({
   const showDots =
     !activeOnly && ((!expanded && !hoverClosing) || dotAnimation !== "none");
 
-  // stack 整体位置：桌宠左侧
+  // stack 整体位置：相对于 wrapper（PetCircle 左上角 = 0,0），贴在圆左侧
   const stackWidth = renderExpanded ? STACK_WIDTH_EXPANDED : STACK_WIDTH_COLLAPSED;
   const fullStackHeight =
     BUBBLE_HEIGHT * BUBBLES.length + BUBBLE_GAP * (BUBBLES.length - 1);
@@ -223,8 +230,8 @@ export default function BubbleStack({
   const stackHeight = activeOnly
     ? BUBBLE_HEIGHT + activeFileChipHeight
     : fullStackHeight;
-  const stackX = petPos.x - STACK_GAP - stackWidth;
-  const baseStackY = petPos.y + (petSize - fullStackHeight) / 2;
+  const stackX = -STACK_GAP - stackWidth;
+  const baseStackY = (petSize - fullStackHeight) / 2;
   const activeInputOffset = (BUBBLES.length - 1) * (BUBBLE_HEIGHT + BUBBLE_GAP);
   const stackY = baseStackY;
   const hitRegionY = activeOnly ? stackY + activeInputOffset : stackY;
@@ -283,8 +290,8 @@ export default function BubbleStack({
   const getDropTargetKind = useCallback(
     (position: DragDropPosition): BubbleKind | null => {
       const { x, y } = normalizeDragPosition(position);
-      const expandedStackX = petPos.x - STACK_GAP - STACK_WIDTH_EXPANDED;
-      const collapsedStackX = petPos.x - STACK_GAP - STACK_WIDTH_COLLAPSED;
+      const expandedStackX = petAbsPos.x - STACK_GAP - STACK_WIDTH_EXPANDED;
+      const collapsedStackX = petAbsPos.x - STACK_GAP - STACK_WIDTH_COLLAPSED;
       const insideExpandedStackX =
         x >= expandedStackX && x <= expandedStackX + STACK_WIDTH_EXPANDED;
       const insideCollapsedStackX =
@@ -293,8 +300,8 @@ export default function BubbleStack({
       for (const [idx, cfg] of BUBBLES.entries()) {
         const top =
           activeOnly
-            ? stackY + activeInputOffset
-            : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
+            ? petAbsPos.y + stackY + activeInputOffset
+            : petAbsPos.y + stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
         const insideY = y >= top && y <= top + BUBBLE_HEIGHT;
         if (insideY && (insideExpandedStackX || insideCollapsedStackX)) {
           return cfg.kind;
@@ -302,13 +309,13 @@ export default function BubbleStack({
       }
 
       const insidePet =
-        x >= petPos.x &&
-        x <= petPos.x + petSize &&
-        y >= petPos.y &&
-        y <= petPos.y + petSize;
+        x >= petAbsPos.x &&
+        x <= petAbsPos.x + petSize &&
+        y >= petAbsPos.y &&
+        y <= petAbsPos.y + petSize;
       return insidePet ? "dialog" : null;
     },
-    [activeInputOffset, activeOnly, petPos.x, petPos.y, petSize, stackY],
+    [activeInputOffset, activeOnly, petAbsPos.x, petAbsPos.y, petSize, stackY],
   );
 
   useEffect(() => {
@@ -367,16 +374,16 @@ export default function BubbleStack({
     };
   }, [getDropTargetKind]);
 
-  // ---- hit region 上报 ----
+  // ---- hit region 上报（绝对坐标 = petAbsPos + 相对偏移）----
   useEffect(() => {
     updateHitRegion("bubble-stack", {
-      x: stackX,
-      y: hitRegionY,
+      x: petAbsPos.x + stackX,
+      y: petAbsPos.y + hitRegionY,
       width: stackWidth,
       height: stackHeight,
     });
     return () => updateHitRegion("bubble-stack", null);
-  }, [hitRegionY, stackX, stackWidth, stackHeight]);
+  }, [petAbsPos.x, petAbsPos.y, hitRegionY, stackX, stackWidth, stackHeight]);
 
   return (
     <>
@@ -431,14 +438,15 @@ export default function BubbleStack({
                 [cfg.kind]: paths,
               }));
             }}
-            // 浮窗位置基准：气泡所在的全局 y
+            // 浮窗位置基准：绝对坐标 = petAbsPos + 相对偏移
             popoverAnchor={{
-              left: activeOnly ? stackX : stackX + stackWidth + 8,
-              top: activeOnly
+              left: petAbsPos.x + (activeOnly ? stackX : stackX + stackWidth + 8),
+              top: petAbsPos.y + (activeOnly
                 ? stackY + activeInputOffset
-                : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP),
+                : stackY + idx * (BUBBLE_HEIGHT + BUBBLE_GAP)),
             }}
             popoverPlacement={activeOnly ? "above" : "side"}
+            onRegisterPopoverMove={onRegisterPopoverMove}
           />
         ))}
       </div>
@@ -468,6 +476,7 @@ interface BubbleProps {
   isDragTarget: boolean;
   droppedFilePaths: string[];
   onDroppedFilePathsChange: (paths: string[]) => void;
+  onRegisterPopoverMove?: (fn: (dx: number, dy: number) => void) => void;
 }
 
 function Bubble({
@@ -489,6 +498,7 @@ function Bubble({
   isDragTarget,
   droppedFilePaths,
   onDroppedFilePathsChange,
+  onRegisterPopoverMove,
 }: BubbleProps) {
   const [input, setInput] = useState("");
   const [sessions, setSessions] = useState<BubbleSession[]>(() => [
@@ -502,6 +512,22 @@ function Bubble({
   const inputRef = useRef<HTMLInputElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const popoverBodyRef = useRef<HTMLDivElement>(null);
+  // 拖拽期间 popover 的额外偏移（相对于起点的 delta），绕过 React 渲染直接操作 DOM
+  const popoverDragDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+
+  // 把同步移动函数注册给 App，拖拽时直接调用
+  useEffect(() => {
+    onRegisterPopoverMove?.((dx, dy) => {
+      popoverDragDeltaRef.current = { dx, dy };
+      if (popoverRef.current) {
+        if (dx === 0 && dy === 0) {
+          popoverRef.current.style.transform = "";
+        } else {
+          popoverRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
+        }
+      }
+    });
+  }, [onRegisterPopoverMove]);
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const runningSessionIdRef = useRef<string | null>(null);
   const lastDropRequestIdRef = useRef<string | null>(null);
@@ -948,8 +974,9 @@ function Bubble({
         </div>
       )}
 
-      {/* 结果浮窗 */}
-      {visible && (popoverOpen || popoverClosing) && (!generationCollapsed || popoverClosing) && (
+      {/* 结果浮窗 —— 用 Portal 挂到 body，逃离 wrapper 的 transform containing block */}
+      {visible && (popoverOpen || popoverClosing) && (!generationCollapsed || popoverClosing) &&
+        createPortal(
         <div
           ref={popoverRef}
           className={`bubble-popover${popoverLarge ? " is-large" : ""}${popoverClosing ? " is-closing" : ""}`}
@@ -1073,6 +1100,53 @@ function Bubble({
                 {activeSession.errorMessage}
               </div>
             )}
+            {/* ====== 审批卡片 ====== */}
+            {task.approvalRequest && (
+              <div className="bubble-approval-card">
+                <div className="bubble-approval-header">
+                  <span className="bubble-approval-icon">⚠️</span>
+                  <div className="bubble-approval-meta">
+                    {task.approvalRequest.riskDescription && (
+                      <div className="bubble-approval-risk">
+                        {task.approvalRequest.riskDescription}
+                      </div>
+                    )}
+                    {task.approvalRequest.commandPreview && (
+                      <code className="bubble-approval-cmd">
+                        {task.approvalRequest.commandPreview}
+                      </code>
+                    )}
+                  </div>
+                </div>
+                <div className="bubble-approval-question">允许执行此命令吗？</div>
+                <div className="bubble-approval-actions">
+                  <button
+                    className="bubble-approval-btn is-once"
+                    onClick={() => task.sendApproval("o")}
+                    title="仅此次允许"
+                  >
+                    <span className="bubble-approval-btn-icon">✓</span>
+                    允许一次
+                  </button>
+                  <button
+                    className="bubble-approval-btn is-session"
+                    onClick={() => task.sendApproval("s")}
+                    title="本次会话内都允许"
+                  >
+                    <span className="bubble-approval-btn-icon">🔓</span>
+                    本次全允许
+                  </button>
+                  <button
+                    className="bubble-approval-btn is-deny"
+                    onClick={() => task.sendApproval("d")}
+                    title="拒绝此命令"
+                  >
+                    <span className="bubble-approval-btn-icon">✕</span>
+                    拒绝
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           {activeSession?.sessionId && cfg.multiTurn && (
             <div className="bubble-popover-footer">
@@ -1080,7 +1154,8 @@ function Bubble({
             </div>
           )}
         </div>
-      )}
+        , document.body)
+      }
     </>
   );
 }
