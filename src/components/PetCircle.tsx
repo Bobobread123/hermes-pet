@@ -35,6 +35,7 @@ export const PET_SPRITE_W = SPRITE_W;
 export const PET_WING_LEFT = Math.round(38 * SCALE); // ~19px
 
 type AnimState = "base" | "idle-spin" | "idle-shake" | "head-pat" | "sleeping" | "waking";
+type ExprState = "neutral" | "happy" | "yawn" | "curious" | "sad" | "surprised" | "sleepy" | "smug";
 
 interface PetCircleProps {
   blushing?: boolean;
@@ -52,6 +53,7 @@ export default function PetCircle({
   const [dragging, setDragging]   = useState(false);
   const [hovered, setHovered]     = useState(false);
   const [animState, setAnimState] = useState<AnimState>("base");
+  const [exprState, setExprState] = useState<ExprState>("neutral");
 
   // spike 调试
   const [moves, setMoves] = useState(0);
@@ -162,6 +164,24 @@ export default function PetCircle({
     return () => clearInterval(timer);
   }, []);
 
+  // 随机表情：每 3s 在 base 状态下随机触发一次，持续 2s
+  const exprStateRef = useRef(exprState);
+  exprStateRef.current = exprState;
+  const exprIndexRef = useRef(0);
+  useEffect(() => {
+      const EXPRS: ExprState[] = ["happy", "yawn", "curious", "sad", "surprised", "sleepy", "smug"];
+    const timer = setInterval(() => {
+      if (animStateRef.current !== "base") return;
+      if (exprStateRef.current !== "neutral") return;
+      // 顺序轮转，确保每种都能看到
+      const next = EXPRS[exprIndexRef.current % EXPRS.length];
+      exprIndexRef.current += 1;
+      setExprState(next);
+      setTimeout(() => setExprState("neutral"), 2000);
+    }, 3_000);
+    return () => clearInterval(timer);
+  }, []);
+
   // 阴影椭圆的绝对位置（跟随 pos，但不参与 breathing）
   // SVG 椭圆 cx=163, cy=199.5，scale=0.5 → 渲染坐标 cx=81.5, cy=99.75
   const shadowLeft = pos.x + 81.5;  // 椭圆中心 X（绝对）
@@ -192,6 +212,7 @@ export default function PetCircle({
           blushing     ? "is-blushing" : "",
           dragging     ? "is-dragging" : "",
           `anim-${animState}`,
+          exprState !== "neutral" ? `expr-${exprState}` : "",
         ].filter(Boolean).join(" ")}
         style={{
           width:     SPRITE_W,
@@ -321,6 +342,117 @@ export default function PetCircle({
 
           {/* ── 嘴巴（x=153, y=150, 20×5） ── */}
           <rect className="mouth" x="153" y="150" width="20" height="5" fill="#303030"/>
+
+          {/* ── 表情 overlay（非 neutral 时覆盖眼睛/嘴巴） ──
+               覆盖矩形尺寸必须严格对齐原始 rect：
+               左眼 x=133 y=120 w=10 h=20 → 覆盖 x=133 y=120 w=10 h=20
+               右眼 x=183 y=120 w=10 h=20 → 覆盖 x=183 y=120 w=10 h=20
+               嘴   x=153 y=150 w=20 h=5  → 覆盖 x=153 y=150 w=20 h=5
+          */}
+          {exprState !== "neutral" && (
+            <g className={`expr-overlay expr-overlay--${exprState}`}>
+
+              {/* happy：大方眼（宽 14）+ 高光 + 大弧上扬嘴 */}
+              {exprState === "happy" && (<>
+                {/* 精确覆盖原眼 */}
+                <rect x="133" y="120" width="10" height="20" fill="#F9DA77"/>
+                <rect x="183" y="120" width="10" height="20" fill="#F9DA77"/>
+                {/* 精确覆盖原嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 大圆眼：宽 14，向左右各扩 2px（132~145, 182~195），高 22 */}
+                <rect x="132" y="119" width="14" height="22" fill="#303030"/>
+                <rect x="182" y="119" width="14" height="22" fill="#303030"/>
+                {/* 高光点 */}
+                <rect x="133" y="120" width="4" height="4" fill="white"/>
+                <rect x="183" y="120" width="4" height="4" fill="white"/>
+                {/* 大弧嘴 */}
+                <path d="M153 153 Q163 168 173 153" stroke="#303030" strokeWidth="3.5" fill="none" strokeLinecap="round"/>
+              </>)}
+
+              {/* yawn：眼睛眯成极细线 + 嘴巴竖向方形（纵向张大，打哈欠感） */}
+              {exprState === "yawn" && (<>
+                {/* 盖原眼 */}
+                <rect x="133" y="120" width="10" height="20" fill="#F9DA77"/>
+                <rect x="183" y="120" width="10" height="20" fill="#F9DA77"/>
+                {/* 盖原嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 眼睛眯成极细线（2px 高） */}
+                <rect x="133" y="129" width="10" height="2" fill="#303030"/>
+                <rect x="183" y="129" width="10" height="2" fill="#303030"/>
+                {/* 竖向方形大嘴：宽 16，高 14，纵向张开 */}
+                <rect x="155" y="148" width="16" height="14" fill="#303030"/>
+              </>)}
+
+              {/* curious：左眼正常，右眼上半盖掉（挑眉感）+ 嘴歪右侧微扬 */}
+              {exprState === "curious" && (<>
+                {/* 只盖右眼上半 10px */}
+                <rect x="183" y="120" width="10" height="10" fill="#F9DA77"/>
+                {/* 右眼只剩下半 */}
+                <rect x="183" y="130" width="10" height="10" fill="#303030"/>
+                {/* 盖原嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 嘴：左平右微扬 */}
+                <path d="M153 154 Q163 154 173 150" stroke="#303030" strokeWidth="3" fill="none" strokeLinecap="round"/>
+              </>)}
+
+              {/* sad：眼睛上半盖掉（眉头压低）+ 嘴角下弧 */}
+              {exprState === "sad" && (<>
+                {/* 盖上半眼（各 10px 高） */}
+                <rect x="133" y="120" width="10" height="10" fill="#F9DA77"/>
+                <rect x="183" y="120" width="10" height="10" fill="#F9DA77"/>
+                {/* 留下半眼 */}
+                <rect x="133" y="130" width="10" height="10" fill="#303030"/>
+                <rect x="183" y="130" width="10" height="10" fill="#303030"/>
+                {/* 盖原嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 嘴角下弧 */}
+                <path d="M153 157 Q163 150 173 157" stroke="#303030" strokeWidth="3" fill="none" strokeLinecap="round"/>
+              </>)}
+
+              {/* surprised：眼睛加高（向上扩 4px）+ 方形大嘴 */}
+              {exprState === "surprised" && (<>
+                {/* 向上扩眼（覆盖 y=116 区域先铺金色，再画眼） */}
+                <rect x="133" y="116" width="10" height="4" fill="#F9DA77"/>
+                <rect x="183" y="116" width="10" height="4" fill="#F9DA77"/>
+                {/* 眼睛加高：y=116 高 24 */}
+                <rect x="133" y="116" width="10" height="24" fill="#303030"/>
+                <rect x="183" y="116" width="10" height="24" fill="#303030"/>
+                <rect x="134" y="117" width="4" height="4" fill="white"/>
+                <rect x="184" y="117" width="4" height="4" fill="white"/>
+                {/* 盖原嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 方形大嘴：宽 16，高 12 */}
+                <rect x="155" y="150" width="16" height="12" fill="#303030"/>
+              </>)}
+
+              {/* sleepy：眼睛盖掉上 17px，只剩底部 3px 细缝，真的快睡着 */}
+              {exprState === "sleepy" && (<>
+                {/* 盖眼上 17px，只留底部 3px */}
+                <rect x="133" y="120" width="10" height="17" fill="#F9DA77"/>
+                <rect x="183" y="120" width="10" height="17" fill="#F9DA77"/>
+                {/* 剩余极细条：y=137 高 3px */}
+                <rect x="133" y="137" width="10" height="3" fill="#303030"/>
+                <rect x="183" y="137" width="10" height="3" fill="#303030"/>
+                {/* 盖原嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 嘴：微微下弯的小线（无精打采） */}
+                <path d="M155 152 Q163 156 171 152" stroke="#303030" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
+              </>)}
+
+              {/* smug：左眼正常，右眼眯成细线 + 嘴角单侧上扬 */}
+              {exprState === "smug" && (<>
+                {/* 盖右眼 */}
+                <rect x="183" y="120" width="10" height="20" fill="#F9DA77"/>
+                {/* 盖嘴 */}
+                <rect x="153" y="150" width="20" height="5" fill="#F9DA77"/>
+                {/* 右眼眯成细线 */}
+                <line x1="183" y1="130" x2="193" y2="130" stroke="#303030" strokeWidth="3" strokeLinecap="round"/>
+                {/* 嘴：左边平，右边上扬 */}
+                <path d="M153 154 Q163 154 173 149" stroke="#303030" strokeWidth="3" fill="none" strokeLinecap="round"/>
+              </>)}
+
+            </g>
+          )}
 
           {/* 阴影椭圆已移到 SVG 外部，见 .pet-shadow */}
 
