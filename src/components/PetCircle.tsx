@@ -162,10 +162,29 @@ export default function PetCircle({
     return () => clearInterval(timer);
   }, []);
 
+  // 阴影椭圆的绝对位置（跟随 pos，但不参与 breathing）
+  // SVG 椭圆 cx=163, cy=199.5，scale=0.5 → 渲染坐标 cx=81.5, cy=99.75
+  const shadowLeft = pos.x + 81.5;  // 椭圆中心 X（绝对）
+  const shadowTop  = pos.y + 99.75; // 椭圆中心 Y（绝对）
+
   const sleeping = animState === "sleeping";
 
   return (
     <>
+      {/* 漂浮阴影：兄弟节点，跟随 pos 但不受 breathing 影响 */}
+      <div
+        className={[
+          "pet-shadow",
+          sleeping       ? "pet-shadow--slow"    : "",
+          dragging       ? "pet-shadow--dragging" : "",
+        ].filter(Boolean).join(" ")}
+        style={{
+          position: "fixed",
+          left: shadowLeft,
+          top:  shadowTop,
+          transform: "translate(-50%, -50%)",
+        }}
+      />
       <div
         className={[
           "pet-circle",
@@ -303,15 +322,7 @@ export default function PetCircle({
           {/* ── 嘴巴（x=153, y=150, 20×5） ── */}
           <rect className="mouth" x="153" y="150" width="20" height="5" fill="#303030"/>
 
-          {/* ── 腿/底座（#929292，y=180） ── */}
-          <rect x="123" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="133" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="143" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="153" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="163" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="173" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="183" y="180" width="10" height="10" fill="#929292"/>
-          <rect x="193" y="180" width="10" height="10" fill="#929292"/>
+          {/* 阴影椭圆已移到 SVG 外部，见 .pet-shadow */}
 
           {/* ── 左翅膀（白色 + fillOpacity 渐变） ── */}
           <rect className="wing wing-left" x="88" y="135" width="10" height="10" fill="white" fillOpacity="0.98"/>
@@ -333,25 +344,25 @@ export default function PetCircle({
           <rect className="wing wing-left" x="68" y="135" width="10" height="10" fill="white" fillOpacity="0.9"/>
           <rect className="wing wing-left" x="78" y="145" width="10" height="10" fill="white" fillOpacity="0.9"/>
 
-          {/* ── 右翅膀（左翅镜像） ── */}
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 238 135)" width="10" height="10" fill="white" fillOpacity="0.98"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 125)" width="10" height="10" fill="white" fillOpacity="0.98"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 238 125)" width="10" height="10" fill="white"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 115)" width="10" height="10" fill="white"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 105)" width="10" height="10" fill="white"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 125)" width="10" height="10" fill="white" fillOpacity="0.95"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 115)" width="10" height="10" fill="white" fillOpacity="0.98"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 125)" width="10" height="10" fill="white" fillOpacity="0.9"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 115)" width="10" height="10" fill="white" fillOpacity="0.95"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 278 115)" width="10" height="10" fill="white" fillOpacity="0.98"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 288 115)" width="10" height="10" fill="white"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 105)" width="10" height="10" fill="white"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 278 125)" width="10" height="10" fill="white" fillOpacity="0.8"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 268 135)" width="10" height="10" fill="white" fillOpacity="0.8"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 238 145)" width="10" height="10" fill="white" fillOpacity="0.95"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 135)" width="10" height="10" fill="white" fillOpacity="0.95"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 258 135)" width="10" height="10" fill="white" fillOpacity="0.9"/>
-          <rect className="wing wing-right" transform="matrix(-1 0 0 1 248 145)" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          {/* ── 右翅膀（明确 x/y 坐标，不用 matrix，避免渲染不对称） ── */}
+          <rect className="wing wing-right" x="228" y="125" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" x="228" y="135" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" x="228" y="145" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" x="238" y="115" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" x="238" y="125" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" x="238" y="135" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" x="238" y="145" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-right" x="248" y="105" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" x="248" y="115" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" x="248" y="125" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" x="248" y="135" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-right" x="258" y="105" width="10" height="10" fill="white"/>
+          <rect className="wing wing-right" x="258" y="115" width="10" height="10" fill="white" fillOpacity="0.95"/>
+          <rect className="wing wing-right" x="258" y="125" width="10" height="10" fill="white" fillOpacity="0.9"/>
+          <rect className="wing wing-right" x="258" y="135" width="10" height="10" fill="white" fillOpacity="0.8"/>
+          <rect className="wing wing-right" x="268" y="115" width="10" height="10" fill="white" fillOpacity="0.98"/>
+          <rect className="wing wing-right" x="268" y="125" width="10" height="10" fill="white" fillOpacity="0.8"/>
+          <rect className="wing wing-right" x="278" y="115" width="10" height="10" fill="white"/>
         </svg>
 
         {/* 睡眠时头顶飘 zzz */}

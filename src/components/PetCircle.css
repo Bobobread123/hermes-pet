@@ -19,6 +19,33 @@
   overflow: visible;
 }
 
+/* ── 漂浮阴影（独立于 SVG，不参与 breathing） ── */
+.pet-shadow {
+  /* 位置由 JS inline style 控制（fixed + left/top + translate(-50%,-50%)） */
+  width:  53px;
+  height: 7.5px;
+  border-radius: 50%;
+  background: #B2B2B2;
+  pointer-events: none;
+  /* scaleX + opacity 与身体 breathing 同频（2.5s ease-in-out） */
+  animation: shadowPulse 2.5s ease-in-out infinite;
+}
+.pet-shadow--slow {
+  animation: shadowPulseSlow 4s ease-in-out infinite;
+}
+.pet-shadow--dragging {
+  animation: none;
+}
+
+@keyframes shadowPulse {
+  0%, 100% { transform: translate(-50%, -50%) scaleX(1);    opacity: 0.9; }
+  50%       { transform: translate(-50%, -50%) scaleX(0.94); opacity: 0.65; }
+}
+@keyframes shadowPulseSlow {
+  0%, 100% { transform: translate(-50%, -50%) scaleX(1);    opacity: 0.9; }
+  50%       { transform: translate(-50%, -50%) scaleX(0.96); opacity: 0.72; }
+}
+
 /* ─────────────────────────────────────────
    1. 微呼吸（始终开，除 sleeping 变慢）
 ───────────────────────────────────────── */
